@@ -38,11 +38,30 @@ class ConversationManager:
 
     def _tool_snap_camera_photo(self, params: dict):
         reason = params.get("reason") or params.get("context") or "agent requested camera context"
-        return json.dumps(self._camera.capture_and_identify(reason))
+        prompt = params.get("prompt")
+        return json.dumps(self._camera.capture_and_identify(reason, prompt))
 
     def _tool_get_inventory(self, params: dict):
         items = self._inventory.list_all()
-        return json.dumps({"items": items, "count": len(items)})
+        # Build a deduplicated summary so the LLM reliably reports ALL items.
+        grouped = {}
+        for item in items:
+            name = item.get("name") or "Unknown"
+            if name not in grouped:
+                grouped[name] = {"name": name, "type": item.get("type", "unknown"), "copies": 0, "positions": []}
+            grouped[name]["copies"] += 1
+            if item.get("position"):
+                grouped[name]["positions"].append(item["position"])
+        summary_items = list(grouped.values())
+        summary_text = ", ".join(
+            f"{g['name']} ({g['copies']} available)" if g['copies'] > 1 else g['name']
+            for g in summary_items
+        ) or "nothing"
+        return json.dumps({
+            "summary": f"Available items: {summary_text}",
+            "items": summary_items,
+            "total_count": len(items),
+        })
 
     def _tool_get_available_slots(self, params: dict):
         slots = self._inventory.get_available_slots()

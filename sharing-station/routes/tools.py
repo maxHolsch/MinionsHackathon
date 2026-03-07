@@ -16,6 +16,7 @@ users = UserService()
 
 class CameraRequest(BaseModel):
     reason: str
+    prompt: Optional[str] = None  # Custom vision prompt for the AI
 
 
 class LogItemRequest(BaseModel):
@@ -49,7 +50,7 @@ class LockRequest(BaseModel):
 async def snap_camera(req: CameraRequest):
     """Takes a photo and identifies items using vision AI."""
     print(f"[CAMERA] Triggered: {req.reason}")
-    result = camera.capture_and_identify(req.reason)
+    result = camera.capture_and_identify(req.reason, req.prompt)
     return result
 
 

@@ -4,6 +4,14 @@ import json
 from anthropic import Anthropic
 
 
+DEFAULT_VISION_PROMPT = (
+    "You are the vision system for a community sharing station. "
+    "Identify any items (books, board games, objects) visible in this image. "
+    "Context: {reason}. "
+    'Return JSON: {{"items_detected": [{{"name": "...", "type": "book|board_game|other", "condition": "...", "estimated_size": "small|medium|large"}}], "raw_description": "..."}}'
+)
+
+
 class PiCamera:
     """Real Pi camera with Anthropic vision for item identification."""
 
@@ -15,7 +23,7 @@ class PiCamera:
         self.cam.configure(self.cam.create_still_configuration())
         self.anthropic = Anthropic()
 
-    def capture_and_identify(self, reason: str) -> dict:
+    def capture_and_identify(self, reason: str, prompt: str = None) -> dict:
         self.cam.start()
         self.cam.capture_file("/tmp/station_photo.jpg")
         self.cam.stop()
@@ -23,9 +31,14 @@ class PiCamera:
         with open("/tmp/station_photo.jpg", "rb") as f:
             image_data = base64.standard_b64encode(f.read()).decode("utf-8")
 
+        vision_prompt = prompt or DEFAULT_VISION_PROMPT.format(reason=reason)
+        # Always include the reason as context even with custom prompts.
+        if prompt:
+            vision_prompt = f"Context: {reason}.\n\n{prompt}"
+
         response = self.anthropic.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=300,
+            max_tokens=500,
             messages=[
                 {
                     "role": "user",
@@ -40,12 +53,7 @@ class PiCamera:
                         },
                         {
                             "type": "text",
-                            "text": (
-                                "You are the vision system for a community sharing station. "
-                                "Identify any items (books, board games, objects) visible in this image. "
-                                f"Context: {reason}. "
-                                'Return JSON: {"items_detected": [{"name": "...", "type": "book|board_game|other", "condition": "..."}], "raw_description": "..."}'
-                            ),
+                            "text": vision_prompt,
                         },
                     ],
                 }
