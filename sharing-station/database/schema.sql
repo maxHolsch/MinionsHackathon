@@ -15,8 +15,15 @@ create table items (
   category    text,
   status      text not null default 'available' check (status in ('available', 'borrowed')),
   donated_by  uuid references users(id) on delete set null,
+  slot_row    integer check (slot_row >= 0 and slot_row <= 2),
+  slot_col    integer check (slot_col >= 0 and slot_col <= 9),
   created_at  timestamptz default now()
 );
+
+-- Prevent two available items from occupying the same physical slot
+create unique index items_slot_unique_available
+  on items (slot_row, slot_col)
+  where status = 'available' and slot_row is not null and slot_col is not null;
 
 create table transactions (
   id         uuid primary key default gen_random_uuid(),

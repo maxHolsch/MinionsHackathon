@@ -78,8 +78,7 @@ Run with: `python main.py` (starts uvicorn on port 8000).
 | `SUPABASE_URL` | Supabase project URL used by `database/client.py` |
 | `SUPABASE_KEY` | Supabase anon/service key used by `database/client.py` |
 
-`SUPABASE_URL`/`SUPABASE_KEY` are required for user/auth flows (`/api/auth/nfc`, `/api/tools/user-info`, conversation user context).
-Inventory still has an in-memory fallback for local dry runs if Supabase is unavailable.
+`SUPABASE_URL`/`SUPABASE_KEY` are required for auth/user/inventory flows (`/api/auth/nfc`, `/api/tools/user-info`, `/api/tools/log-item`, `/api/tools/inventory`).
 
 ---
 
@@ -111,7 +110,7 @@ Useful for quick testing. Press `Ctrl+C` to stop.
 
 ### `routes/tools.py` — Tool Webhook Endpoints
 
-These are the 6 endpoints that ElevenLabs calls when the AI agent decides to use a tool. Each endpoint has a Pydantic request model that must match the parameter names configured in the ElevenLabs dashboard exactly.
+These are the 7 endpoints that ElevenLabs calls when the AI agent decides to use a tool. Each endpoint has a Pydantic request model that must match the parameter names configured in the ElevenLabs dashboard exactly.
 
 #### `POST /api/tools/camera`
 - **Called when**: Agent needs to see what's in the box (deposit verification, pickup confirmation)
@@ -121,14 +120,22 @@ These are the 6 endpoints that ElevenLabs calls when the AI agent decides to use
 
 #### `POST /api/tools/log-item`
 - **Called when**: Agent has confirmed an item deposit or retrieval with the user
-- **Input**: `item_name`, `action` ("deposit"/"retrieval"), `user_id`, optional `condition` and `review`
-- **Action**: Adds or removes the item from inventory
+- **Input**: `item_name`, `action` ("deposit"/"retrieval"), `user_id`, optional `condition`, `review`, `slot_row` (0-2), `slot_col` (0-9)
+- **Action**: Adds or removes the item from inventory. For deposits, `slot_row`/`slot_col` assign the item to a physical slot in the 3×10 grid.
 - **Returns**: `{ success: true, inventory_count: N }`
+- **Error**: Returns `503` if Supabase credentials are not configured
+
+#### `GET /api/tools/available-slots`
+- **Called when**: Agent needs to find an empty slot before depositing an item
+- **Input**: None
+- **Returns**: `{ available_slots: [[row, col], ...], total_available: N }` — list of unoccupied positions in the 3×10 grid
+- **Error**: Returns `503` if Supabase credentials are not configured
 
 #### `GET /api/tools/inventory`
 - **Called when**: User asks what's available, or agent needs context for a pickup
 - **Input**: None
 - **Returns**: `{ items: [...] }` — full list of current items with metadata
+- **Error**: Returns `503` if Supabase credentials are not configured
 
 #### `POST /api/tools/user-info`
 - **Called when**: Agent learns something about the user (gives them a nickname, learns a preference)
@@ -170,14 +177,13 @@ Seeded sample users in `database/schema.sql` and migrations:
 
 ### `services/inventory.py` — Inventory Store
 
-Inventory supports two backends:
-- **Supabase mode (preferred):** Uses collaborator schema in `database/schema.sql`.
-- **Fallback mode:** In-memory seed data for local testing without DB credentials.
+Inventory service is Supabase-only and uses collaborator schema in `database/schema.sql`.
 
 **Methods:**
 - `add(name, user_id, condition, review)` — inserts an `items` row (`status='available'`) and logs a `transactions` row.
 - `remove(name, user_id)` — marks the first matching available item as `borrowed` (or deletes in legacy schemas) and logs a transaction.
 - `list_all()` — returns available items normalized to the API shape used by the dashboard/tool routes.
+- Inventory endpoints return `503` when Supabase credentials are missing.
 
 The API shape remains stable: `id`, `name`, `type`, `deposited_by`, `deposited_at`, `condition`, `review`, `position`.
 When the DB schema has no explicit slot columns, `position` is synthesized from list order for the 3×10 grid UI.
@@ -291,11 +297,12 @@ station = {
   "led": {"mode": "idle", "position": null, "color": null},
   "camera": null,
   "events": [...],
-  "inventory": [...]
+  "inventory": [...],
+  "inventory_error": null
 }
 ```
 
-Imports the `inventory` singleton directly from `routes/tools` so both share the same in-memory store.
+Imports the `inventory` singleton directly from `routes/tools`.
 
 ---
 
@@ -390,17 +397,31 @@ CONVERSATION FLOW:
    If `is_new_user` is "true", welcome them as a brand-new neighbor — introduce yourself,
    ask their name, and offer to remember them next time.
 2. Ask what they're doing (dropping off or picking up)
-3. If dropping off: trigger camera to identify item, confirm with user, log it, ask for a mini review
-4. If picking up: tell them what's available, let them choose, trigger camera to confirm removal, log it
+3. DEPOSIT FLOW:
+   a. Call `snap_camera_photo` to identify the item, confirm with the user
+   b. Call `get_available_slots` to find an empty slot in the 3×10 grid
+   c. Pick a slot — prefer filling left-to-right, top-to-bottom
+   d. Call `control_lights("highlight_item", position=[row, col])` to light up the chosen slot
+   e. Tell the user: "Place it in the lit-up spot!"
+   f. Call `log_item` with the item details AND `slot_row` and `slot_col` for the chosen position
+   g. Ask for a mini review
+4. PICKUP FLOW:
+   a. Call `get_inventory` to see what's available (each item has a position)
+   b. Let the user choose, then call `control_lights("highlight_item", position=[row, col])`
+      to show them where it is
+   c. Call `snap_camera_photo` to confirm removal
+   d. Call `log_item` with action="retrieval" — this frees the slot automatically
 5. Brief friendly chat, then wrap up
 6. When done, call `control_lock("lock")` to close the door — this automatically ends the session.
 TOOL USAGE:
 - Call `snap_camera_photo` when you need to see what's in the box or identify an item
-- Call `log_item` after confirming an item deposit or retrieval with the user
+- Call `get_available_slots` before depositing to find an open slot in the 3×10 grid
+- Call `log_item` after confirming an item deposit or retrieval with the user.
+  For deposits, always include `slot_row` and `slot_col` for the assigned position.
 - Call `get_inventory` when the user asks what's available or you need context
 - Call `update_user_info` to save nicknames, preferences, or conversation memories
-- Call `control_lights` to light up LED positions showing where items are.
-  Positions are [row, col] in a 3-row × 10-column grid (both 0-indexed).
+- Call `control_lights` to highlight item positions. Positions are [row, col] in a
+  3-row × 10-column grid (both 0-indexed).
 - Call `control_lock("lock")` when done — this closes the door AND ends the conversation.
   Do NOT call control_lock("unlock") — the door is already open when you start speaking.
 Never fabricate what's in the box. Always use the camera or inventory tools.
@@ -413,7 +434,7 @@ Keep conversations SHORT — 3-4 exchanges max unless the user wants to chat.
 
 | Component | Current (Hackathon) | Production |
 |-----------|-------------------|------------|
-| Inventory | Supabase (`items` + `transactions`) with in-memory fallback | Same tables, plus stricter validation and monitoring |
+| Inventory | Supabase (`items` + `transactions`) | Same tables, plus stricter validation and monitoring |
 | Users | Supabase (`users` + `memories`) | Same tables, plus auth/RLS hardening |
 | Camera | Mock (returns "Dune") | `pi_camera.py` with Picamera2 + Anthropic vision |
 | LEDs | Mock (console print) | NeoPixel via GPIO |

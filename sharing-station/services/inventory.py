@@ -1,5 +1,3 @@
-from datetime import datetime
-
 try:
     from database.client import supabase
 except Exception:
@@ -8,113 +6,125 @@ except Exception:
 from services.users import UserService
 
 
+GRID_ROWS = 3
+GRID_COLS = 10
+
+
 class InventoryService:
-    """Inventory store — Supabase if configured, otherwise in-memory with a 3×10 position grid."""
+    """Inventory store backed by Supabase."""
 
     def __init__(self):
         self._users = UserService()
-        if not supabase:
-            self._init_memory()
-
-    def _init_memory(self):
-        """Seed in-memory store. Items get positions in the 3-row × 10-col grid."""
-        self._grid = [[None] * 10 for _ in range(3)]
-        self.items = [
-            {
-                "id": "1",
-                "name": "Settlers of Catan",
-                "type": "board_game",
-                "deposited_by": "peter",
-                "deposited_at": "2025-03-06T10:00:00Z",
-                "condition": "good, all pieces present",
-                "review": "Great game, got tired of it after 20 plays though!",
-                "position": [0, 0],
-            },
-            {
-                "id": "2",
-                "name": "The Great Gatsby",
-                "type": "book",
-                "deposited_by": "alice",
-                "deposited_at": "2025-03-05T14:00:00Z",
-                "condition": "slightly dog-eared",
-                "review": None,
-                "position": [0, 1],
-            },
-        ]
-        self._grid[0][0] = "1"
-        self._grid[0][1] = "2"
-        self._next_id = 3
-
-    # ── Slot helpers ─────────────────────────────────────────────────────────
-
-    def _next_slot_memory(self):
-        for r in range(3):
-            for c in range(10):
-                if self._grid[r][c] is None:
-                    return [r, c]
-        return None  # box is full
 
     # ── Public API ───────────────────────────────────────────────────────────
 
-    def add(self, name, user_id, condition=None, review=None):
-        if supabase:
-            return self._add_supabase(name, user_id, condition, review)
-        return self._add_memory(name, user_id, condition, review)
+    def add(self, name, user_id, condition=None, review=None, slot_row=None, slot_col=None):
+        self._assert_supabase()
+        return self._add_supabase(name, user_id, condition, review, slot_row, slot_col)
 
     def remove(self, name, user_id):
-        if supabase:
-            return self._remove_supabase(name, user_id)
-        return self._remove_memory(name)
+        self._assert_supabase()
+        return self._remove_supabase(name, user_id)
 
     def list_all(self):
-        if supabase:
-            try:
-                result = (
-                    supabase.table("items")
-                    .select("*")
-                    .eq("status", "available")
-                    .order("created_at", desc=False)
-                    .execute()
-                )
-                rows = result.data or []
-            except Exception:
-                # Fallback for older local schemas.
-                result = supabase.table("items").select("*").execute()
-                rows = result.data or []
-            return [self._normalize(item, i) for i, item in enumerate(rows)]
-        return self.items
+        self._assert_supabase()
+        try:
+            result = (
+                supabase.table("items")
+                .select("*")
+                .eq("status", "available")
+                .order("created_at", desc=False)
+                .execute()
+            )
+            rows = result.data or []
+        except Exception:
+            # Fallback for older local schemas.
+            result = supabase.table("items").select("*").execute()
+            rows = result.data or []
+        return [self._normalize(item, i) for i, item in enumerate(rows)]
 
-    # ── In-memory implementations ─────────────────────────────────────────────
+    def list_user_contributions(self, user_id):
+        """Items currently available in the station that this user deposited."""
+        self._assert_supabase()
+        resolved_user_id = self._resolve_user_id(user_id)
+        if not resolved_user_id:
+            return []
+        return [
+            item for item in self.list_all()
+            if str(item.get("deposited_by")) == str(resolved_user_id)
+        ]
 
-    def _add_memory(self, name, user_id, condition=None, review=None):
-        position = self._next_slot_memory()
-        item = {
-            "id": str(self._next_id),
-            "name": name,
-            "type": "unknown",
-            "deposited_by": user_id,
-            "deposited_at": datetime.utcnow().isoformat() + "Z",
-            "condition": condition,
-            "review": review,
-            "position": position,
-        }
-        self.items.append(item)
-        if position:
-            self._grid[position[0]][position[1]] = str(self._next_id)
-        self._next_id += 1
-        return item
+    def list_user_checked_out(self, user_id):
+        """Items this user currently has checked out from the station."""
+        self._assert_supabase()
+        resolved_user_id = self._resolve_user_id(user_id)
+        if not resolved_user_id:
+            return []
 
-    def _remove_memory(self, name):
-        for item in self.items:
-            if item["name"].lower() == name.lower():
-                pos = item.get("position")
-                if pos:
-                    self._grid[pos[0]][pos[1]] = None
-        self.items = [i for i in self.items if i["name"].lower() != name.lower()]
+        tx_result = (
+            supabase.table("transactions")
+            .select("item_id,user_id,action,created_at")
+            .order("created_at", desc=False)
+            .execute()
+        )
+        tx_rows = tx_result.data or []
+        latest_by_item = {}
+        for tx in tx_rows:
+            item_id = tx.get("item_id")
+            if item_id:
+                latest_by_item[str(item_id)] = tx
+
+        borrowed_result = (
+            supabase.table("items")
+            .select("*")
+            .eq("status", "borrowed")
+            .order("created_at", desc=False)
+            .execute()
+        )
+        borrowed_rows = borrowed_result.data or []
+
+        checked_out = []
+        for item in borrowed_rows:
+            item_id = str(item.get("id"))
+            latest_tx = latest_by_item.get(item_id)
+            if not latest_tx:
+                continue
+            if (
+                str(latest_tx.get("user_id")) == str(resolved_user_id)
+                and latest_tx.get("action") == "check_out"
+            ):
+                checked_out.append(self._normalize(item))
+
+        return checked_out
+
+    def get_available_slots(self):
+        """Return [row, col] positions not occupied by an available item."""
+        self._assert_supabase()
+        result = (
+            supabase.table("items")
+            .select("slot_row, slot_col")
+            .eq("status", "available")
+            .not_.is_("slot_row", "null")
+            .not_.is_("slot_col", "null")
+            .execute()
+        )
+        occupied = {(r["slot_row"], r["slot_col"]) for r in (result.data or [])}
+        return [
+            [row, col]
+            for row in range(GRID_ROWS)
+            for col in range(GRID_COLS)
+            if (row, col) not in occupied
+        ]
 
     # ── Supabase implementations ──────────────────────────────────────────────
 
-    def _add_supabase(self, name, user_id, condition=None, review=None):
+    def _assert_supabase(self):
+        if not supabase:
+            raise RuntimeError(
+                "Supabase is required for inventory operations. Set SUPABASE_URL and SUPABASE_KEY."
+            )
+
+    def _add_supabase(self, name, user_id, condition=None, review=None, slot_row=None, slot_col=None):
         resolved_user_id = self._resolve_user_id(user_id)
         data = {
             "name": name,
@@ -123,6 +133,11 @@ class InventoryService:
         }
         if resolved_user_id:
             data["donated_by"] = resolved_user_id
+        if slot_row is not None and slot_col is not None:
+            if not (0 <= slot_row < GRID_ROWS and 0 <= slot_col < GRID_COLS):
+                raise ValueError(f"Slot [{slot_row}, {slot_col}] is outside the {GRID_ROWS}x{GRID_COLS} grid")
+            data["slot_row"] = slot_row
+            data["slot_col"] = slot_col
 
         result = supabase.table("items").insert(data).execute()
         inserted = result.data[0]
@@ -204,8 +219,12 @@ class InventoryService:
         """Map DB row shape to the API/UI item format."""
         item = dict(item)
 
-        row = item.pop("position_row", None)
-        col = item.pop("position_col", None)
+        row = item.pop("slot_row", None)
+        if row is None:
+            row = item.pop("position_row", None)
+        col = item.pop("slot_col", None)
+        if col is None:
+            col = item.pop("position_col", None)
         if row is not None and col is not None:
             position = [row, col]
         elif synthetic_index is not None and synthetic_index < 30:

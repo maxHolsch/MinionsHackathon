@@ -24,6 +24,8 @@ class LogItemRequest(BaseModel):
     user_id: str
     condition: Optional[str] = None
     review: Optional[str] = None
+    slot_row: Optional[int] = None  # Physical row (0-2) in 3×10 grid
+    slot_col: Optional[int] = None  # Physical col (0-9) in 3×10 grid
 
 
 class UserInfoRequest(BaseModel):
@@ -54,22 +56,41 @@ async def snap_camera(req: CameraRequest):
 @router.post("/log-item")
 async def log_item(req: LogItemRequest):
     """Logs item deposit or retrieval."""
-    if req.action == "deposit":
-        item = inventory.add(req.item_name, req.user_id, req.condition, req.review)
-        pos = item.get("position")
-        log_event("LOG", f"Deposited '{req.item_name}' by {req.user_id} → slot {pos}")
-    elif req.action == "retrieval":
-        inventory.remove(req.item_name, req.user_id)
-        log_event("LOG", f"Retrieved '{req.item_name}' by {req.user_id}")
-    count = len(inventory.items) if hasattr(inventory, "items") else len(inventory.list_all())
-    return {"success": True, "inventory_count": count}
+    try:
+        if req.action == "deposit":
+            item = inventory.add(req.item_name, req.user_id, req.condition, req.review, req.slot_row, req.slot_col)
+            pos = item.get("position")
+            log_event("LOG", f"Deposited '{req.item_name}' by {req.user_id} → slot {pos}")
+        elif req.action == "retrieval":
+            inventory.remove(req.item_name, req.user_id)
+            log_event("LOG", f"Retrieved '{req.item_name}' by {req.user_id}")
+        count = len(inventory.list_all())
+        return {"success": True, "inventory_count": count}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"log-item failed: {e}")
 
 
 @router.get("/inventory")
 async def get_inventory():
     """Returns current inventory."""
     print("[INVENTORY] Requested")
-    return {"items": inventory.list_all()}
+    try:
+        return {"items": inventory.list_all()}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/available-slots")
+async def get_available_slots():
+    """Returns available physical slot positions in the 3x10 grid."""
+    print("[SLOTS] Available slots requested")
+    try:
+        slots = inventory.get_available_slots()
+        return {"available_slots": slots, "total_available": len(slots)}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.post("/user-info")

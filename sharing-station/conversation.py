@@ -1,11 +1,48 @@
 import os
+import threading
+import time
+from collections import Counter
 
 from elevenlabs.client import ElevenLabs
 from elevenlabs.conversational_ai.conversation import (
+    ClientTools,
     Conversation,
     ConversationInitiationData,
 )
 from elevenlabs.conversational_ai.default_audio_interface import DefaultAudioInterface
+
+
+class MuteableAudioInterface:
+    """Wraps an audio interface and allows muting mic input while keeping output audio."""
+
+    def __init__(self, inner_interface, muted: bool = False):
+        self._inner = inner_interface
+        self._muted = muted
+        self._lock = threading.Lock()
+
+    def set_muted(self, muted: bool):
+        with self._lock:
+            self._muted = bool(muted)
+
+    def is_muted(self) -> bool:
+        with self._lock:
+            return self._muted
+
+    def start(self, input_callback):
+        def _gated_input_callback(in_data: bytes):
+            if not self.is_muted():
+                input_callback(in_data)
+
+        self._inner.start(_gated_input_callback)
+
+    def stop(self):
+        self._inner.stop()
+
+    def output(self, audio: bytes):
+        self._inner.output(audio)
+
+    def interrupt(self):
+        self._inner.interrupt()
 
 
 class ConversationManager:
@@ -14,52 +51,296 @@ class ConversationManager:
         self.agent_id = os.getenv("ELEVENLABS_AGENT_ID")
         self.conversation = None
         self.is_active = False
+        self._state_lock = threading.Lock()
+        self._active_user_id = None
+        self._mic_muted = False
+        self._audio_interface = None
+
+        from services.hardware import camera, leds, servo
+        from services.inventory import InventoryService
+        from services.users import UserService
+
+        self._camera = camera
+        self._leds = leds
+        self._servo = servo
+        self._inventory = InventoryService()
+        self._users = UserService()
+
+    def _error_result(self, message: str):
+        return {"success": False, "error": message}
+
+    def _tool_snap_camera_photo(self, params: dict):
+        reason = params.get("reason") or params.get("context") or "agent requested camera context"
+        return self._camera.capture_and_identify(reason)
+
+    def _tool_get_inventory(self, params: dict):
+        items = self._inventory.list_all()
+        return {"items": items, "count": len(items)}
+
+    def _tool_log_item(self, params: dict):
+        item_name = params.get("item_name") or params.get("name")
+        action = str(params.get("action") or "").strip().lower()
+        user_id = params.get("user_id") or params.get("user") or self._active_user_id
+        condition = params.get("condition")
+        review = params.get("review")
+
+        if not item_name:
+            return self._error_result("item_name is required")
+        if not user_id:
+            return self._error_result("user_id is required")
+        if action not in {"deposit", "retrieval"}:
+            return self._error_result("action must be 'deposit' or 'retrieval'")
+
+        if action == "deposit":
+            item = self._inventory.add(item_name, user_id, condition, review)
+            count = len(self._inventory.list_all())
+            return {"success": True, "item": item, "inventory_count": count}
+
+        removed = self._inventory.remove(item_name, user_id)
+        count = len(self._inventory.list_all())
+        return {"success": True, "item": removed, "inventory_count": count}
+
+    def _tool_update_user_info(self, params: dict):
+        user_id = params.get("user_id") or self._active_user_id
+        if not user_id:
+            return self._error_result("user_id is required")
+        user = self._users.update(
+            user_id,
+            nickname=params.get("nickname"),
+            memory=params.get("memory"),
+            preferences=params.get("preferences"),
+        )
+        return {"success": True, "user": user}
+
+    def _tool_control_lights(self, params: dict):
+        mode = params.get("mode") or "idle"
+        position = params.get("position")
+        if position is None:
+            row = params.get("row")
+            col = params.get("col")
+            if row is not None and col is not None:
+                position = [int(row), int(col)]
+        color = params.get("color")
+        return self._leds.set_mode(mode, position, color)
+
+    def _tool_control_lock(self, params: dict):
+        action = params.get("action") or "lock"
+        result = self._servo.set_lock(action)
+        if action == "lock":
+            # Close session shortly after lock command returns.
+            threading.Thread(target=self.stop, daemon=True).start()
+        return result
+
+    def _register_tool_aliases(self, client_tools: ClientTools, aliases: list[str], handler):
+        for alias in aliases:
+            client_tools.register(alias, handler)
+
+    def _build_client_tools(self):
+        client_tools = ClientTools()
+        self._register_tool_aliases(
+            client_tools,
+            ["snap_camera_photo", "functions.snap_camera_photo", "camera", "functions.camera"],
+            self._tool_snap_camera_photo,
+        )
+        self._register_tool_aliases(
+            client_tools,
+            ["get_inventory", "functions.get_inventory", "inventory", "functions.inventory"],
+            self._tool_get_inventory,
+        )
+        self._register_tool_aliases(
+            client_tools,
+            ["log_item", "functions.log_item", "log-item", "functions.log-item"],
+            self._tool_log_item,
+        )
+        self._register_tool_aliases(
+            client_tools,
+            ["update_user_info", "functions.update_user_info", "user_info", "functions.user_info"],
+            self._tool_update_user_info,
+        )
+        self._register_tool_aliases(
+            client_tools,
+            ["control_lights", "functions.control_lights", "lights", "functions.lights"],
+            self._tool_control_lights,
+        )
+        self._register_tool_aliases(
+            client_tools,
+            ["control_lock", "functions.control_lock", "lock", "functions.lock"],
+            self._tool_control_lock,
+        )
+        return client_tools
+
+    def _summarize_item_names(self, item_names: list) -> str:
+        if not item_names:
+            return "none"
+        counts = Counter([name.strip() for name in item_names if name and name.strip()])
+        if not counts:
+            return "none"
+        return ", ".join(
+            f"{name} x{count}" if count > 1 else name
+            for name, count in counts.items()
+        )
+
+    def _on_session_end(self):
+        with self._state_lock:
+            self.is_active = False
+            self.conversation = None
+            self._active_user_id = None
+            self._audio_interface = None
+        print("[SESSION] Conversation ended")
+
+    def set_mic_muted(self, muted: bool) -> bool:
+        with self._state_lock:
+            self._mic_muted = bool(muted)
+            audio_interface = self._audio_interface
+
+        if audio_interface:
+            audio_interface.set_muted(self._mic_muted)
+        return self._mic_muted
+
+    def is_mic_muted(self) -> bool:
+        with self._state_lock:
+            return self._mic_muted
+
+    def _send_initial_user_context(
+        self,
+        user_id: str = None,
+        user_name: str = None,
+        nickname: str = None,
+        memories: list = None,
+        contributed_items: list = None,
+        checked_out_items: list = None,
+        is_new_user: bool = False,
+    ):
+        convo = self.conversation
+        if not convo:
+            return
+
+        parts = []
+        if user_name:
+            parts.append(f"Authenticated user name: {user_name}.")
+        if nickname:
+            parts.append(f"Nickname: {nickname}.")
+        if user_id:
+            parts.append(f"User ID: {user_id}.")
+        parts.append(f"New user: {'yes' if is_new_user else 'no'}.")
+        if memories:
+            parts.append(f"Known memories/preferences: {'; '.join(memories)}.")
+        if contributed_items is not None:
+            if contributed_items:
+                parts.append(
+                    f"Items {user_name or 'this user'} has deposited and are currently in the station: "
+                    f"{self._summarize_item_names(contributed_items)}."
+                )
+            else:
+                parts.append(f"Items {user_name or 'this user'} has deposited and are currently in the station: none.")
+        if checked_out_items is not None:
+            if checked_out_items:
+                parts.append(
+                    f"Items {user_name or 'this user'} currently has checked out: "
+                    f"{self._summarize_item_names(checked_out_items)}."
+                )
+            else:
+                parts.append(f"Items {user_name or 'this user'} currently has checked out: none.")
+        text = " ".join(parts).strip()
+        if not text:
+            return
+
+        # Wait briefly for websocket readiness before sending the contextual update.
+        for _ in range(20):
+            try:
+                convo.send_contextual_update(text)
+                return
+            except RuntimeError:
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"[SESSION] Failed to send contextual update: {e}")
+                return
 
     def start(self, user_id: str = None, user_name: str = None,
-              nickname: str = None, memories: list = None, is_new_user: bool = False):
+              nickname: str = None, memories: list = None, contributed_items: list = None,
+              checked_out_items: list = None, is_new_user: bool = False):
         """Start a new conversation session."""
+        if self.is_active:
+            self.stop()
+
         dynamic_vars = {}
         if user_id:
             dynamic_vars["user_id"] = user_id
         if user_name:
             dynamic_vars["user_name"] = user_name
+            dynamic_vars["name"] = user_name
+            dynamic_vars["display_name"] = user_name
         if nickname:
             dynamic_vars["nickname"] = nickname
         if memories:
-            dynamic_vars["memories"] = "; ".join(memories)
-        if is_new_user:
-            dynamic_vars["is_new_user"] = "true"
+            joined_memories = "; ".join(memories)
+            dynamic_vars["memories"] = joined_memories
+            dynamic_vars["memory_summary"] = joined_memories
+        if contributed_items is not None:
+            dynamic_vars["user_station_items"] = self._summarize_item_names(contributed_items)
+        if checked_out_items is not None:
+            dynamic_vars["user_checked_out_items"] = self._summarize_item_names(checked_out_items)
+        dynamic_vars["is_new_user"] = "true" if is_new_user else "false"
 
         config = ConversationInitiationData(dynamic_variables=dynamic_vars)
+        client_tools = self._build_client_tools()
+        audio_interface = MuteableAudioInterface(
+            DefaultAudioInterface(),
+            muted=self.is_mic_muted(),
+        )
 
-        self.conversation = Conversation(
+        convo = Conversation(
             self.client,
             self.agent_id,
+            user_id=user_id,
             config=config,
+            client_tools=client_tools,
             requires_auth=bool(os.getenv("ELEVENLABS_API_KEY")),
-            audio_interface=DefaultAudioInterface(),
+            audio_interface=audio_interface,
             callback_agent_response=lambda r: print(f"[AGENT] {r}"),
             callback_agent_response_correction=lambda o, c: print(
                 f"[AGENT CORRECTION] {o} -> {c}"
             ),
             callback_user_transcript=lambda t: print(f"[USER] {t}"),
+            callback_end_session=self._on_session_end,
         )
-        self.is_active = True  # set BEFORE start_session — it blocks until the session ends
+        with self._state_lock:
+            self.conversation = convo
+            self.is_active = True
+            self._active_user_id = user_id
+            self._audio_interface = audio_interface
         print(f"[SESSION] Starting conversation for user: {user_name or 'unknown'}")
-        try:
-            self.conversation.start_session()  # blocks for the entire conversation
-        finally:
-            self.is_active = False
-            print("[SESSION] Conversation ended")
+        convo.start_session()
+
+        threading.Thread(
+            target=self._send_initial_user_context,
+            kwargs={
+                "user_id": user_id,
+                "user_name": user_name,
+                "nickname": nickname,
+                "memories": memories,
+                "contributed_items": contributed_items,
+                "checked_out_items": checked_out_items,
+                "is_new_user": is_new_user,
+            },
+            daemon=True,
+        ).start()
 
     def stop(self):
-        if self.conversation:
-            self.conversation.end_session()
-            self.conversation.wait_for_session_end()
+        convo = self.conversation
+        if not convo:
+            return
+        convo.end_session()
+        convo.wait_for_session_end()
+        with self._state_lock:
+            self.is_active = False
+            if self.conversation is convo:
+                self.conversation = None
 
     def wait(self):
-        if self.conversation:
-            self.conversation.wait_for_session_end()
+        convo = self.conversation
+        if convo:
+            convo.wait_for_session_end()
 
 
 # Shared singleton — import this in main.py and routes/tools.py

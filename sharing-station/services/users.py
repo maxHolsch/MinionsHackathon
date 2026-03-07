@@ -1,9 +1,12 @@
+import uuid
+
 try:
     from database.client import supabase
 except Exception:
     supabase = None
 
 PREFERENCES_PREFIX = "preferences::"
+DEFAULT_USER_NAME = "neighbor"
 
 
 class UserService:
@@ -11,15 +14,20 @@ class UserService:
 
     # ── Public API ───────────────────────────────────────────────────────────
 
-    def get_or_create_by_nfc(self, nfc_id: str):
+    def get_or_create_by_nfc(self, nfc_id: str, fallback_name: str = None):
         """Return (user, is_new_user) for an NFC tag."""
         self._assert_supabase()
-        user_row = self._fetch_user_by_nfc(nfc_id)
+        normalized_nfc = self._normalize_nfc_id(nfc_id)
+        resolved_name = self._normalize_name(fallback_name) or DEFAULT_USER_NAME
+        user_row = self._fetch_user_by_nfc(normalized_nfc)
         is_new_user = user_row is None
         if is_new_user:
-            user_row = self._create_supabase_user(nfc_id=nfc_id, name="neighbor")
+            user_row = self._create_supabase_user(nfc_id=normalized_nfc, name=resolved_name)
+        elif resolved_name and self._is_placeholder_name(user_row.get("name")):
+            self._set_user_name(user_row["id"], resolved_name)
+            user_row = self._fetch_user_by_id(user_row["id"]) or user_row
         if not user_row:
-            raise RuntimeError(f"Failed to load or create user for NFC tag '{nfc_id}'")
+            raise RuntimeError(f"Failed to load or create user for NFC tag '{normalized_nfc}'")
         self._set_active_user(user_row["id"])
         return self._normalize_supabase_user(user_row), is_new_user
 
@@ -32,14 +40,22 @@ class UserService:
     def get(self, user_id: str):
         """Return user by ID, or None."""
         self._assert_supabase()
-        user_row = self._fetch_user_by_id(user_id) or self._fetch_user_by_nfc(user_id)
+        user_row = None
+        if self._looks_like_uuid(user_id):
+            user_row = self._fetch_user_by_id(user_id)
+        if not user_row:
+            user_row = self._fetch_user_by_nfc(user_id)
         return self._normalize_supabase_user(user_row) if user_row else None
 
     def update(self, user_id, nickname=None, memory=None, preferences=None):
         self._assert_supabase()
-        user_row = self._fetch_user_by_id(user_id) or self._fetch_user_by_nfc(user_id)
+        user_row = None
+        if self._looks_like_uuid(user_id):
+            user_row = self._fetch_user_by_id(user_id)
         if not user_row:
-            user_row = self._create_supabase_user(nfc_id=user_id, name="neighbor")
+            user_row = self._fetch_user_by_nfc(user_id)
+        if not user_row:
+            user_row = self._create_supabase_user(nfc_id=user_id, name=DEFAULT_USER_NAME)
         if not user_row:
             raise RuntimeError(f"Failed to resolve user '{user_id}'")
 
@@ -70,12 +86,13 @@ class UserService:
         return result.data[0] if result.data else None
 
     def _fetch_user_by_nfc(self, nfc_id: str):
+        normalized_nfc = self._normalize_nfc_id(nfc_id)
         for column in ("nfc_uuid", "nfc_id"):
             try:
                 result = (
                     supabase.table("users")
                     .select("*")
-                    .eq(column, nfc_id)
+                    .eq(column, normalized_nfc)
                     .limit(1)
                     .execute()
                 )
@@ -86,18 +103,41 @@ class UserService:
         return None
 
     def _create_supabase_user(self, nfc_id: str, name: str):
+        normalized_nfc = self._normalize_nfc_id(nfc_id)
         payloads = [
-            {"nfc_uuid": nfc_id, "name": name},
-            {"nfc_id": nfc_id, "name": name},
-            {"id": nfc_id, "nfc_id": nfc_id, "name": name},
+            {"nfc_uuid": normalized_nfc, "name": name},
+            {"nfc_id": normalized_nfc, "name": name},
+            {"id": normalized_nfc, "nfc_id": normalized_nfc, "name": name},
         ]
+        errors = []
         for payload in payloads:
             try:
-                result = supabase.table("users").insert(payload).select("*").execute()
-                if result.data:
+                # Some supabase-py versions don't support chained `.select()` after insert.
+                result = supabase.table("users").insert(payload).execute()
+                if getattr(result, "data", None):
                     return result.data[0]
-            except Exception:
+
+                # If insert succeeds but returns no rows, fetch the created row explicitly.
+                created = self._fetch_user_by_nfc(normalized_nfc)
+                if created:
+                    return created
+            except Exception as e:
+                errors.append(str(e))
+                # If insert failed due duplicate constraints, row may already exist.
+                try:
+                    existing = self._fetch_user_by_nfc(normalized_nfc)
+                    if existing:
+                        return existing
+                except Exception:
+                    pass
                 continue
+
+        if errors:
+            raise RuntimeError(
+                "Failed to create user in Supabase. "
+                "Check table schema/RLS policies and anon key permissions. "
+                f"Last error: {errors[-1]}"
+            )
         return None
 
     def _set_active_user(self, user_id):
@@ -106,6 +146,12 @@ class UserService:
             supabase.table("users").update({"is_active": True}).eq("id", user_id).execute()
         except Exception:
             # Some DB snapshots may not include `is_active`; ignore in that case.
+            pass
+
+    def _set_user_name(self, user_id: str, name: str):
+        try:
+            supabase.table("users").update({"name": name}).eq("id", user_id).execute()
+        except Exception:
             pass
 
     def _insert_memory(self, user_id, content: str):
@@ -144,3 +190,23 @@ class UserService:
             .execute()
         )
         return result.data or []
+
+    def _normalize_nfc_id(self, nfc_id: str) -> str:
+        return str(nfc_id or "").strip().lower()
+
+    def _normalize_name(self, name: str):
+        if not name:
+            return None
+        normalized = str(name).strip()
+        return normalized or None
+
+    def _is_placeholder_name(self, name: str) -> bool:
+        normalized = (name or "").strip().lower()
+        return normalized in {"", DEFAULT_USER_NAME}
+
+    def _looks_like_uuid(self, value: str) -> bool:
+        try:
+            uuid.UUID(str(value))
+            return True
+        except Exception:
+            return False
