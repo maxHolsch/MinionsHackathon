@@ -15,11 +15,13 @@ class ConversationManager:
         self.conversation = None
         self.is_active = False
 
-    def start(self, user_id: str = None, user_name: str = None):
+    def start(self, user_id: str = None, user_name: str = None, is_new_user: bool = False):
         """Start a new conversation session."""
         dynamic_vars = {}
         if user_name:
             dynamic_vars["user_name"] = user_name
+        if is_new_user:
+            dynamic_vars["is_new_user"] = "true"
 
         config = ConversationInitiationData(dynamic_variables=dynamic_vars)
 
@@ -49,3 +51,7 @@ class ConversationManager:
     def wait(self):
         if self.conversation:
             self.conversation.wait_for_session_end()
+
+
+# Shared singleton — import this in main.py and routes/tools.py
+manager = ConversationManager()

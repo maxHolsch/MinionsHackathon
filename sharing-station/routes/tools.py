@@ -1,10 +1,12 @@
+import asyncio
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 from services.inventory import InventoryService
 from services.users import UserService
 from services.hardware import camera, leds, servo
+from conversation import manager as conversation_manager
 
 router = APIRouter()
 inventory = InventoryService()
@@ -32,7 +34,7 @@ class UserInfoRequest(BaseModel):
 
 class LightsRequest(BaseModel):
     mode: str
-    position: Optional[int] = None
+    position: Optional[List[int]] = None  # [row, col] — 3 rows × 10 cols (0-indexed)
     color: Optional[str] = None
 
 
@@ -84,7 +86,13 @@ async def control_lights(req: LightsRequest):
 
 @router.post("/lock")
 async def control_lock(req: LockRequest):
-    """Controls the door lock."""
+    """Controls the door lock. Locking re-engages the door and ends the conversation."""
     print(f"[LOCK] {req.action}")
     result = servo.set_lock(req.action)
+    if req.action == "lock":
+        # End the conversation after the response is returned
+        async def _end_conversation():
+            await asyncio.sleep(0.5)
+            await asyncio.to_thread(conversation_manager.stop)
+        asyncio.create_task(_end_conversation())
     return result
