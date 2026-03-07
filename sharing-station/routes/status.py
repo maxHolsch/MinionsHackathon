@@ -22,7 +22,6 @@ async def get_status():
 
     return {
         "conversation_active": conversation_manager.is_active,
-        "mic_muted": conversation_manager.is_mic_muted(),
         "lock": station["lock"],
         "led": station["led"],
         "camera": station["camera"],

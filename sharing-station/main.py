@@ -4,7 +4,6 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
-from pydantic import BaseModel
 
 load_dotenv()
 
@@ -75,22 +74,6 @@ async def stop_conversation():
     conversation_manager.stop()
     return {"status": "stopped"}
 
-
-class MicStateRequest(BaseModel):
-    muted: bool
-
-
-@app.get("/conversation/mic")
-async def get_conversation_mic_state():
-    """Return current conversation mic mute state."""
-    return {"mic_muted": conversation_manager.is_mic_muted()}
-
-
-@app.post("/conversation/mic")
-async def set_conversation_mic_state(req: MicStateRequest):
-    """Mute/unmute local mic input during conversation."""
-    muted = conversation_manager.set_mic_muted(req.muted)
-    return {"mic_muted": muted}
 
 
 # Static files mount LAST — it's a catch-all on "/"

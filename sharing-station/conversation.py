@@ -12,38 +12,6 @@ from elevenlabs.conversational_ai.conversation import (
 from elevenlabs.conversational_ai.default_audio_interface import DefaultAudioInterface
 
 
-class MuteableAudioInterface:
-    """Wraps an audio interface and allows muting mic input while keeping output audio."""
-
-    def __init__(self, inner_interface, muted: bool = False):
-        self._inner = inner_interface
-        self._muted = muted
-        self._lock = threading.Lock()
-
-    def set_muted(self, muted: bool):
-        with self._lock:
-            self._muted = bool(muted)
-
-    def is_muted(self) -> bool:
-        with self._lock:
-            return self._muted
-
-    def start(self, input_callback):
-        def _gated_input_callback(in_data: bytes):
-            if not self.is_muted():
-                input_callback(in_data)
-
-        self._inner.start(_gated_input_callback)
-
-    def stop(self):
-        self._inner.stop()
-
-    def output(self, audio: bytes):
-        self._inner.output(audio)
-
-    def interrupt(self):
-        self._inner.interrupt()
-
 
 class ConversationManager:
     def __init__(self):
@@ -53,8 +21,6 @@ class ConversationManager:
         self.is_active = False
         self._state_lock = threading.Lock()
         self._active_user_id = None
-        self._mic_muted = False
-        self._audio_interface = None
 
         from services.hardware import camera, leds, servo
         from services.inventory import InventoryService
@@ -185,21 +151,7 @@ class ConversationManager:
             self.is_active = False
             self.conversation = None
             self._active_user_id = None
-            self._audio_interface = None
         print("[SESSION] Conversation ended")
-
-    def set_mic_muted(self, muted: bool) -> bool:
-        with self._state_lock:
-            self._mic_muted = bool(muted)
-            audio_interface = self._audio_interface
-
-        if audio_interface:
-            audio_interface.set_muted(self._mic_muted)
-        return self._mic_muted
-
-    def is_mic_muted(self) -> bool:
-        with self._state_lock:
-            return self._mic_muted
 
     def _send_initial_user_context(
         self,
@@ -284,10 +236,6 @@ class ConversationManager:
 
         config = ConversationInitiationData(dynamic_variables=dynamic_vars)
         client_tools = self._build_client_tools()
-        audio_interface = MuteableAudioInterface(
-            DefaultAudioInterface(),
-            muted=self.is_mic_muted(),
-        )
 
         convo = Conversation(
             self.client,
@@ -296,7 +244,7 @@ class ConversationManager:
             config=config,
             client_tools=client_tools,
             requires_auth=bool(os.getenv("ELEVENLABS_API_KEY")),
-            audio_interface=audio_interface,
+            audio_interface=DefaultAudioInterface(),
             callback_agent_response=lambda r: print(f"[AGENT] {r}"),
             callback_agent_response_correction=lambda o, c: print(
                 f"[AGENT CORRECTION] {o} -> {c}"
@@ -308,7 +256,6 @@ class ConversationManager:
             self.conversation = convo
             self.is_active = True
             self._active_user_id = user_id
-            self._audio_interface = audio_interface
         print(f"[SESSION] Starting conversation for user: {user_name or 'unknown'}")
         convo.start_session()
 
