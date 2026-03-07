@@ -51,6 +51,92 @@ A voice-powered community sharing station where neighbors lend and borrow books,
 
 ---
 
+## Database (Supabase)
+
+Project ref: `ihfcwilblsrwvxrvbbir`
+
+### Schema
+
+#### `users`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `nfc_uuid` | text | Unique — used to identify user on NFC tap |
+| `name` | text | Display name |
+| `nickname` | text | AI-generated affectionate nickname |
+| `is_active` | boolean | `true` while user is in an active session |
+| `created_at` | timestamptz | |
+
+#### `items`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `name` | text | Item name (e.g. "Catan", "Dune") |
+| `category` | text | e.g. `book`, `board_game` |
+| `status` | text | `available` or `borrowed` |
+| `donated_by` | uuid | FK → `users.id` (nullable) |
+| `created_at` | timestamptz | |
+
+#### `transactions`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `user_id` | uuid | FK → `users.id` |
+| `item_id` | uuid | FK → `items.id` |
+| `action` | text | `check_in` or `check_out` |
+| `created_at` | timestamptz | |
+
+#### `memories`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `user_id` | uuid | FK → `users.id` |
+| `content` | text | Free-form AI memory (e.g. "Peter liked Dune, especially the world-building") |
+| `created_at` | timestamptz | |
+
+---
+
+### Edge Functions
+
+#### `POST /functions/v1/activate-user`
+
+Called on NFC tap. Deactivates any currently active user, then sets the tapped user as active.
+
+**Request body:**
+```json
+{ "nfc_uuid": "abc-123" }
+```
+
+**Response:** The full user row, or `404` if the UUID isn't registered.
+
+---
+
+#### `GET /functions/v1/get-active-user`
+
+Returns the currently active user, or `{ user: null }` if nobody is active.
+
+**Response:**
+```json
+{
+  "id": "...",
+  "nfc_uuid": "abc-123",
+  "name": "Peter",
+  "nickname": "Tiger",
+  "is_active": true,
+  "created_at": "..."
+}
+```
+
+---
+
+### Deploy edge functions
+```bash
+supabase functions deploy activate-user --workdir database
+supabase functions deploy get-active-user --workdir database
+```
+
+---
+
 ## File-by-File Breakdown
 
 ### `main.py` — Application Entry Point
@@ -623,7 +709,9 @@ Keep conversations SHORT — 3-4 exchanges max unless the user wants to chat.
 
 The active runtime client now lives in `database/client.py`, and services read collaborator tables under `database/`.
 
-Recommended workflow:
+The schema is already deployed — see the **Database** section above.
+
+Recommended workflow for future schema changes:
 1. Keep schema changes in `database/supabase/migrations/*.sql`
 2. Regenerate/check `database/schema.sql` when migrations change
 3. Set `SUPABASE_URL` + `SUPABASE_KEY` in `.env` and validate flows:
