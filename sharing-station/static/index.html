@@ -1,136 +1,555 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sharing Station</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 2rem 1rem;
-        }
-        h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #FF6B35; }
-        .status { margin-bottom: 2rem; font-size: 0.9rem; color: #888; }
-        .status.connected { color: #4CAF50; }
-        .btn {
-            display: block;
-            width: 100%;
-            max-width: 300px;
-            padding: 1rem;
-            margin: 0.5rem 0;
-            border: none;
-            border-radius: 12px;
-            font-size: 1.1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.1s;
-        }
-        .btn:active { transform: scale(0.97); }
-        .btn-nfc { background: #FF6B35; color: white; }
-        .btn-inventory { background: #16213e; color: #4fc3f7; border: 1px solid #4fc3f7; }
-        .btn-stop { background: #c62828; color: white; }
-        .log {
-            width: 100%;
-            max-width: 400px;
-            margin-top: 2rem;
-            padding: 1rem;
-            background: #16213e;
-            border-radius: 12px;
-            font-family: monospace;
-            font-size: 0.8rem;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        .log p { margin: 0.3rem 0; }
-        .log .agent { color: #4fc3f7; }
-        .log .user { color: #81c784; }
-        .log .system { color: #ffb74d; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sharing Station — Dev Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --accent: #f78166;
+      --green: #3fb950;
+      --amber: #d29922;
+      --blue: #58a6ff;
+      --red: #f85149;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    /* ── HEADER ── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { font-size: 1rem; font-weight: 600; color: var(--accent); flex: 1; }
+    #conv-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--muted); flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    #conv-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    #conv-label { font-size: 0.75rem; color: var(--muted); }
+    #btn-stop {
+      padding: 4px 12px; border-radius: 6px; border: 1px solid var(--red);
+      background: transparent; color: var(--red); font-size: 0.75rem;
+      cursor: pointer;
+    }
+    #btn-stop:hover { background: var(--red); color: white; }
+
+    /* ── MAIN GRID ── */
+    main {
+      display: grid;
+      grid-template-columns: 260px 1fr 300px;
+      gap: 0;
+      overflow: hidden;
+      height: calc(100vh - 49px);
+    }
+
+    /* ── PANELS ── */
+    .panel {
+      display: flex; flex-direction: column;
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .panel:last-child { border-right: none; }
+
+    .panel-title {
+      padding: 8px 14px;
+      font-size: 0.7rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .panel-body {
+      flex: 1; overflow-y: auto; padding: 12px;
+      display: flex; flex-direction: column; gap: 12px;
+    }
+
+    /* ── CONTROLS ── */
+    .section-label {
+      font-size: 0.65rem; text-transform: uppercase;
+      letter-spacing: 0.1em; color: var(--muted); margin-bottom: 6px;
+    }
+
+    .nfc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+    .btn {
+      padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text);
+      font-size: 0.78rem; cursor: pointer; text-align: center;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .btn:hover { border-color: var(--blue); background: #1c2334; }
+    .btn.primary { background: var(--blue); border-color: var(--blue); color: #0d1117; font-weight: 600; }
+    .btn.primary:hover { background: #79b8ff; }
+    .btn.danger { border-color: var(--red); color: var(--red); }
+    .btn.danger:hover { background: var(--red); color: white; }
+    .btn.wide { grid-column: 1 / -1; }
+
+    .form-row { display: flex; gap: 6px; align-items: center; }
+    .form-row label { font-size: 0.72rem; color: var(--muted); width: 60px; flex-shrink: 0; }
+
+    input, select {
+      flex: 1; padding: 5px 8px; border-radius: 5px;
+      border: 1px solid var(--border); background: var(--bg);
+      color: var(--text); font-size: 0.75rem;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--blue); }
+
+    .tool-section {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px;
+      display: flex; flex-direction: column; gap: 7px;
+    }
+
+    /* ── EVENT LOG ── */
+    #log {
+      flex: 1; padding: 10px 14px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.72rem; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .ev { display: flex; gap: 8px; }
+    .ev-time { color: var(--muted); flex-shrink: 0; }
+    .ev-cat  { font-weight: 600; flex-shrink: 0; width: 60px; }
+    .ev-msg  { color: var(--text); word-break: break-word; }
+    .ev.LOCK    .ev-cat { color: var(--amber); }
+    .ev.CAMERA  .ev-cat { color: var(--blue); }
+    .ev.LIGHTS  .ev-cat { color: #bc8cff; }
+    .ev.LOG     .ev-cat { color: var(--green); }
+    .ev.AUTH    .ev-cat { color: var(--accent); }
+    .ev.CONV    .ev-cat { color: var(--green); }
+    .ev.ERROR   .ev-cat { color: var(--red); }
+    .ev.INFO    .ev-cat { color: var(--muted); }
+
+    /* ── STATUS PANEL ── */
+    .status-block {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px;
+    }
+
+    /* Lock */
+    #lock-icon { font-size: 2rem; text-align: center; margin: 4px 0; }
+    #lock-state { text-align: center; font-size: 0.75rem; color: var(--muted); }
+
+    /* LED Grid */
+    #led-grid {
+      display: grid;
+      grid-template-columns: repeat(10, 1fr);
+      gap: 4px;
+    }
+    .led-dot {
+      aspect-ratio: 1; border-radius: 50%;
+      background: #1e2535;
+    }
+    .led-dot.active { background: #f5a623; box-shadow: 0 0 6px #f5a623; }
+    .led-dot.has-item { background: #7a5000; }
+
+    /* Camera */
+    #camera-result {
+      font-size: 0.72rem; color: var(--muted);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      white-space: pre-wrap; word-break: break-word;
+    }
+
+    /* Inventory */
+    .inv-item {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 0.75rem;
+    }
+    .inv-item:last-child { border-bottom: none; }
+    .inv-name { color: var(--text); }
+    .inv-pos { color: var(--muted); font-family: monospace; font-size: 0.68rem; }
+    #inv-empty { color: var(--muted); font-size: 0.75rem; text-align: center; padding: 8px 0; }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  </style>
 </head>
 <body>
-    <h1>Sharing Station</h1>
-    <p class="status" id="status">Disconnected</p>
 
-    <button class="btn btn-nfc" onclick="tapNfc('abc123')">Tap NFC (Peter)</button>
-    <button class="btn btn-nfc" onclick="tapNfc('def456')">Tap NFC (Alice)</button>
-    <button class="btn btn-inventory" onclick="getInventory()">View Inventory</button>
-    <button class="btn btn-stop" onclick="stopConversation()">End Session</button>
+<!-- ── HEADER ── -->
+<header>
+  <h1>Sharing Station — Dev Dashboard</h1>
+  <div id="conv-dot"></div>
+  <span id="conv-label">No session</span>
+  <button id="btn-stop" onclick="stopConversation()">Stop Session</button>
+</header>
 
-    <div class="log" id="log"></div>
+<!-- ── MAIN ── -->
+<main>
 
-    <script>
-        const API = window.location.origin;
-        const log = document.getElementById('log');
-        const status = document.getElementById('status');
+  <!-- LEFT: Controls -->
+  <div class="panel">
+    <div class="panel-title">Controls</div>
+    <div class="panel-body">
 
-        function addLog(msg, cls = 'system') {
-            const p = document.createElement('p');
-            p.className = cls;
-            p.textContent = msg;
-            log.appendChild(p);
-            log.scrollTop = log.scrollHeight;
+      <!-- NFC Tap -->
+      <div>
+        <div class="section-label">NFC Tap</div>
+        <div class="nfc-grid">
+          <button class="btn" onclick="tapNfc('abc123', 'Peter')">Peter</button>
+          <button class="btn" onclick="tapNfc('def456', 'Alice')">Alice</button>
+          <button class="btn" onclick="tapNfc('ghi789', 'Bob')">Bob</button>
+          <button class="btn" onclick="tapNfc('zzz999', 'New')">New Neighbor</button>
+        </div>
+      </div>
+
+      <!-- Lock -->
+      <div class="tool-section">
+        <div class="section-label">Lock</div>
+        <div class="nfc-grid">
+          <button class="btn" onclick="callLock('unlock')">Unlock</button>
+          <button class="btn danger" onclick="callLock('lock')">Lock</button>
+        </div>
+      </div>
+
+      <!-- Camera -->
+      <div class="tool-section">
+        <div class="section-label">Camera</div>
+        <div class="form-row">
+          <label>Reason</label>
+          <input id="cam-reason" type="text" value="deposit verification" placeholder="why?">
+        </div>
+        <button class="btn primary" onclick="snapCamera()">Snap Photo</button>
+      </div>
+
+      <!-- Lights -->
+      <div class="tool-section">
+        <div class="section-label">Lights</div>
+        <div class="form-row">
+          <label>Mode</label>
+          <select id="light-mode">
+            <option>idle</option>
+            <option>highlight_item</option>
+            <option>welcome</option>
+            <option>goodbye</option>
+            <option>error</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Row</label>
+          <input id="light-row" type="number" min="0" max="2" value="0" style="width:60px;flex:none">
+          <label style="width:30px">Col</label>
+          <input id="light-col" type="number" min="0" max="9" value="0" style="width:60px;flex:none">
+        </div>
+        <div class="form-row">
+          <label>Color</label>
+          <input id="light-color" type="text" value="#f5a623" placeholder="#rrggbb">
+        </div>
+        <button class="btn primary" onclick="callLights()">Set Lights</button>
+      </div>
+
+      <!-- Log Item -->
+      <div class="tool-section">
+        <div class="section-label">Log Item</div>
+        <div class="form-row">
+          <label>Item</label>
+          <input id="item-name" type="text" value="Dune" placeholder="item name">
+        </div>
+        <div class="form-row">
+          <label>User ID</label>
+          <input id="item-user" type="text" value="abc123" placeholder="user id">
+        </div>
+        <div class="form-row">
+          <label>Action</label>
+          <select id="item-action">
+            <option value="deposit">Deposit</option>
+            <option value="retrieval">Retrieval</option>
+          </select>
+        </div>
+        <button class="btn primary" onclick="logItem()">Log Item</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- CENTER: Activity Log -->
+  <div class="panel" style="border-right:1px solid var(--border)">
+    <div class="panel-title">Activity Log</div>
+    <div id="log"></div>
+  </div>
+
+  <!-- RIGHT: Hardware State -->
+  <div class="panel">
+    <div class="panel-title">Hardware State</div>
+    <div class="panel-body">
+
+      <!-- Lock -->
+      <div class="status-block">
+        <div class="section-label">Door Lock</div>
+        <div id="lock-icon">🔒</div>
+        <div id="lock-state">locked</div>
+      </div>
+
+      <!-- LED Grid -->
+      <div class="status-block">
+        <div class="section-label" style="margin-bottom:8px">LED Grid (3 × 10)</div>
+        <div id="led-grid"></div>
+        <div id="led-label" style="font-size:0.68rem;color:var(--muted);margin-top:6px;text-align:center">idle</div>
+      </div>
+
+      <!-- Camera -->
+      <div class="status-block">
+        <div class="section-label">Last Camera Result</div>
+        <div id="camera-result">No photo taken yet.</div>
+      </div>
+
+      <!-- Inventory -->
+      <div class="status-block">
+        <div class="section-label">Inventory</div>
+        <div id="inventory-list"><div id="inv-empty">Loading…</div></div>
+      </div>
+
+    </div>
+  </div>
+
+</main>
+
+<script>
+  const API = window.location.origin;
+  const logEl = document.getElementById('log');
+
+  // ── Build LED grid ──
+  const ledGrid = document.getElementById('led-grid');
+  const dots = [];
+  for (let i = 0; i < 30; i++) {
+    const d = document.createElement('div');
+    d.className = 'led-dot';
+    d.title = `[${Math.floor(i / 10)}, ${i % 10}]`;
+    ledGrid.appendChild(d);
+    dots.push(d);
+  }
+
+  // ── Event log ──
+  let knownEventTimes = new Set();
+
+  function addEvent(category, message, t = null) {
+    const now = t || new Date().toLocaleTimeString('en-US', { hour12: false });
+    const key = `${t}|${category}|${message}`;
+    if (t && knownEventTimes.has(key)) return;
+    if (t) knownEventTimes.add(key);
+    const ev = document.createElement('div');
+    ev.className = `ev ${category}`;
+    ev.innerHTML = `<span class="ev-time">${now}</span><span class="ev-cat">${category}</span><span class="ev-msg">${escHtml(message)}</span>`;
+    logEl.prepend(ev);
+    // keep log from growing forever
+    while (logEl.children.length > 200) logEl.removeChild(logEl.lastChild);
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── Poll /api/status ──
+  let lastEventSet = new Set();
+
+  async function poll() {
+    try {
+      const res = await fetch(`${API}/api/status`);
+      if (!res.ok) return;
+      const d = await res.json();
+
+      // Conversation dot
+      const dot = document.getElementById('conv-dot');
+      const label = document.getElementById('conv-label');
+      dot.className = d.conversation_active ? 'active' : '';
+      label.textContent = d.conversation_active ? 'Session active' : 'No session';
+
+      // Lock
+      const locked = d.lock === 'locked';
+      document.getElementById('lock-icon').textContent = locked ? '🔒' : '🔓';
+      document.getElementById('lock-state').textContent = d.lock;
+      document.getElementById('lock-state').style.color = locked ? 'var(--amber)' : 'var(--green)';
+
+      // LED grid
+      const activeLed = d.led;
+      const occupiedSlots = new Set();
+      (d.inventory || []).forEach(item => {
+        const pos = item.position;
+        if (Array.isArray(pos) && pos.length === 2) {
+          occupiedSlots.add(pos[0] * 10 + pos[1]);
         }
+      });
+      dots.forEach((dot, i) => {
+        const isActive = activeLed && activeLed.mode !== 'idle' &&
+          Array.isArray(activeLed.position) &&
+          activeLed.position[0] * 10 + activeLed.position[1] === i;
+        dot.className = 'led-dot' + (isActive ? ' active' : (occupiedSlots.has(i) ? ' has-item' : ''));
+      });
+      const ledMode = activeLed ? activeLed.mode : 'idle';
+      const ledPos = activeLed && Array.isArray(activeLed.position) ? ` @ [${activeLed.position}]` : '';
+      document.getElementById('led-label').textContent = ledMode + ledPos;
 
-        async function tapNfc(nfcId) {
-            try {
-                const res = await fetch(`${API}/api/auth/nfc`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ nfc_id: nfcId }),
-                });
-                const data = await res.json();
-                if (data.authenticated) {
-                    addLog(`Authenticated: ${data.user_name} (${data.nickname || 'no nickname'})`, 'user');
-                    status.textContent = `Connected: ${data.user_name}`;
-                    status.className = 'status connected';
+      // Camera
+      const camEl = document.getElementById('camera-result');
+      if (d.camera) {
+        const items = (d.camera.items_detected || []).map(it => `${it.name} (${it.condition})`).join('\n');
+        camEl.textContent = items || d.camera.raw_description || JSON.stringify(d.camera, null, 2);
+      } else {
+        camEl.textContent = 'No photo taken yet.';
+      }
 
-                    // Start conversation
-                    await fetch(`${API}/conversation/start?user_name=${data.user_name}`, { method: 'POST' });
-                    addLog('Conversation started', 'agent');
-                } else {
-                    addLog(`Auth failed: ${data.error}`, 'system');
-                }
-            } catch (e) {
-                addLog(`Error: ${e.message}`, 'system');
-            }
+      // Inventory
+      const invEl = document.getElementById('inventory-list');
+      if (!d.inventory || d.inventory.length === 0) {
+        invEl.innerHTML = '<div id="inv-empty">Empty</div>';
+      } else {
+        invEl.innerHTML = d.inventory.map(item => {
+          const pos = Array.isArray(item.position) ? `[${item.position}]` : '—';
+          return `<div class="inv-item">
+            <span class="inv-name">${escHtml(item.name)}</span>
+            <span class="inv-pos">${pos}</span>
+          </div>`;
+        }).join('');
+      }
+
+      // Merge server events into log (avoid duplicates)
+      (d.events || []).forEach(ev => {
+        const key = `${ev.t}|${ev.category}|${ev.message}`;
+        if (!lastEventSet.has(key)) {
+          lastEventSet.add(key);
+          addEvent(ev.category, ev.message, ev.t);
         }
+      });
 
-        async function getInventory() {
-            try {
-                const res = await fetch(`${API}/api/tools/inventory`);
-                const data = await res.json();
-                addLog(`Inventory (${data.items.length} items):`, 'system');
-                data.items.forEach(item => {
-                    addLog(`  - ${item.name} (by ${item.deposited_by})`, 'system');
-                });
-            } catch (e) {
-                addLog(`Error: ${e.message}`, 'system');
-            }
-        }
+    } catch (e) {
+      // Server not running — don't spam
+    }
+  }
 
-        async function stopConversation() {
-            try {
-                await fetch(`${API}/conversation/stop`, { method: 'POST' });
-                addLog('Session ended', 'system');
-                status.textContent = 'Disconnected';
-                status.className = 'status';
-            } catch (e) {
-                addLog(`Error: ${e.message}`, 'system');
-            }
-        }
+  // Start polling
+  poll();
+  setInterval(poll, 1000);
 
-        // Health check
-        fetch(`${API}/health`)
-            .then(r => r.json())
-            .then(d => addLog(`Server: ${d.status}`, 'system'))
-            .catch(() => addLog('Server not reachable', 'system'));
-    </script>
+  // ── API helpers ──
+
+  async function tapNfc(nfcId, label) {
+    addEvent('AUTH', `NFC tap: ${label} (${nfcId})`);
+    try {
+      const res = await fetch(`${API}/api/auth/nfc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nfc_id: nfcId }),
+      });
+      const data = await res.json();
+      if (data.authenticated) {
+        const who = data.nickname ? `${data.user_name} aka "${data.nickname}"` : data.user_name;
+        addEvent('AUTH', `Authenticated → ${who}${data.is_new_user ? ' [NEW USER]' : ''}`);
+        addEvent('CONV', 'Conversation starting in background…');
+      } else {
+        addEvent('ERROR', `Auth failed: ${JSON.stringify(data)}`);
+      }
+    } catch (e) {
+      addEvent('ERROR', e.message);
+    }
+  }
+
+  async function callLock(action) {
+    addEvent('LOCK', `Calling lock(${action})`);
+    try {
+      const res = await fetch(`${API}/api/tools/lock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      addEvent('LOCK', `Result: ${data.state}`);
+    } catch (e) {
+      addEvent('ERROR', e.message);
+    }
+  }
+
+  async function snapCamera() {
+    const reason = document.getElementById('cam-reason').value || 'manual test';
+    addEvent('CAMERA', `Snap: "${reason}"`);
+    try {
+      const res = await fetch(`${API}/api/tools/camera`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      const data = await res.json();
+      const items = (data.items_detected || []).map(i => i.name).join(', ') || 'none';
+      addEvent('CAMERA', `Detected: ${items}`);
+    } catch (e) {
+      addEvent('ERROR', e.message);
+    }
+  }
+
+  async function callLights() {
+    const mode = document.getElementById('light-mode').value;
+    const row = parseInt(document.getElementById('light-row').value);
+    const col = parseInt(document.getElementById('light-col').value);
+    const color = document.getElementById('light-color').value;
+    addEvent('LIGHTS', `mode=${mode}, pos=[${row},${col}], color=${color}`);
+    try {
+      const res = await fetch(`${API}/api/tools/lights`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, position: [row, col], color }),
+      });
+      const data = await res.json();
+      addEvent('LIGHTS', `OK: ${JSON.stringify(data)}`);
+    } catch (e) {
+      addEvent('ERROR', e.message);
+    }
+  }
+
+  async function logItem() {
+    const item_name = document.getElementById('item-name').value;
+    const user_id = document.getElementById('item-user').value;
+    const action = document.getElementById('item-action').value;
+    if (!item_name || !user_id) { addEvent('ERROR', 'Item name and user ID required'); return; }
+    addEvent('LOG', `${action}: "${item_name}" by ${user_id}`);
+    try {
+      const res = await fetch(`${API}/api/tools/log-item`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_name, action, user_id }),
+      });
+      const data = await res.json();
+      addEvent('LOG', `Inventory count: ${data.inventory_count}`);
+    } catch (e) {
+      addEvent('ERROR', e.message);
+    }
+  }
+
+  async function stopConversation() {
+    addEvent('CONV', 'Stopping session…');
+    try {
+      await fetch(`${API}/conversation/stop`, { method: 'POST' });
+      addEvent('CONV', 'Session stopped');
+    } catch (e) {
+      addEvent('ERROR', e.message);
+    }
+  }
+
+  // Initial health check
+  fetch(`${API}/health`)
+    .then(r => r.json())
+    .then(d => addEvent('INFO', `Server: ${d.status}`))
+    .catch(() => addEvent('ERROR', 'Server not reachable'));
+</script>
 </body>
 </html>

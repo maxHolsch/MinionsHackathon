@@ -68,15 +68,18 @@ Run with: `python main.py` (starts uvicorn on port 8000).
 
 ### `config.py` — Environment Variables
 
-Loads three keys from `.env`:
+`config.py` loads the core AI keys from `.env`. Supabase variables are read by `database/client.py`.
 
 | Variable | Purpose |
 |----------|---------|
 | `ELEVENLABS_API_KEY` | Authenticates with ElevenLabs API |
 | `ELEVENLABS_AGENT_ID` | Identifies which ElevenLabs agent to use |
 | `ANTHROPIC_API_KEY` | Used by the Pi camera for vision-based item identification |
+| `SUPABASE_URL` | Supabase project URL used by `database/client.py` |
+| `SUPABASE_KEY` | Supabase anon/service key used by `database/client.py` |
 
-Copy `.env.example` to `.env` and fill in your keys.
+`SUPABASE_URL`/`SUPABASE_KEY` are required for user/auth flows (`/api/auth/nfc`, `/api/tools/user-info`, conversation user context).
+Inventory still has an in-memory fallback for local dry runs if Supabase is unavailable.
 
 ---
 
@@ -151,42 +154,47 @@ These are the 6 endpoints that ElevenLabs calls when the AI agent decides to use
 
 `POST /api/auth/nfc` maps an NFC tag ID to a known user.
 
-Currently uses a hardcoded dictionary for the hackathon:
+Current behavior:
+- Looks up the user in Supabase via `users.nfc_uuid` (fallback: `users.nfc_id` for older schemas).
+- If no user exists, creates a new user record for that NFC tag.
+- Marks the scanned user as active (`is_active=true`) when that column exists.
+- Starts the conversation immediately using the resolved user profile.
+- Returns `503` if Supabase credentials are not configured.
 
-| NFC ID | User |
-|--------|------|
-| `abc123` | peter |
-| `def456` | alice |
-| `ghi789` | bob |
-
-Returns the user's name and nickname if authenticated, or an error if the tag is unknown. In production, this would query Supabase.
+Seeded sample users in `database/schema.sql` and migrations:
+- `abc123` → Peter (`nickname`: Tiger)
+- `def456` → Alice
+- `ghi789` → Bob
 
 ---
 
 ### `services/inventory.py` — Inventory Store
 
-An in-memory inventory pre-seeded with two test items (Settlers of Catan and The Great Gatsby).
+Inventory supports two backends:
+- **Supabase mode (preferred):** Uses collaborator schema in `database/schema.sql`.
+- **Fallback mode:** In-memory seed data for local testing without DB credentials.
 
 **Methods:**
-- `add(name, user_id, condition, review)` — adds an item with auto-incrementing ID and timestamp
-- `remove(name, user_id)` — removes an item by name (case-insensitive match)
-- `list_all()` — returns all current items
+- `add(name, user_id, condition, review)` — inserts an `items` row (`status='available'`) and logs a `transactions` row.
+- `remove(name, user_id)` — marks the first matching available item as `borrowed` (or deletes in legacy schemas) and logs a transaction.
+- `list_all()` — returns available items normalized to the API shape used by the dashboard/tool routes.
 
-Each item has: `id`, `name`, `type`, `deposited_by`, `deposited_at`, `condition`, `review`.
-
-This is the first thing to swap for Supabase — replace method bodies with database queries while keeping the same interface.
+The API shape remains stable: `id`, `name`, `type`, `deposited_by`, `deposited_at`, `condition`, `review`, `position`.
+When the DB schema has no explicit slot columns, `position` is synthesized from list order for the 3×10 grid UI.
 
 ---
 
 ### `services/users.py` — User Store
 
-An in-memory user store pre-seeded with Peter (nickname "Tiger", loves sci-fi) and Alice.
+User service is Supabase-only and reads/writes from `users` + `memories` tables.
 
 **Methods:**
-- `get(user_id)` — returns user profile or None
-- `update(user_id, nickname, memory, preferences)` — creates user if needed, updates fields. Memories append to a list.
+- `get_or_create_by_nfc(nfc_id)` — resolves NFC tags, creating users when needed.
+- `get(user_id)` / `get_by_nfc(nfc_id)` — fetches normalized user profiles.
+- `update(user_id, nickname, memory, preferences)` — updates nickname and stores memory/preferences entries in the `memories` table.
+- User endpoints return `503` when Supabase credentials are missing.
 
-Each user has: `name`, `nickname`, `memories` (list of strings), `preferences`.
+Normalized user shape returned to routes: `id`, `nfc_id`, `name`, `nickname`, `memories`, `preferences`, `is_active`.
 
 ---
 
@@ -230,16 +238,64 @@ Skeleton implementations for real GPIO-controlled NeoPixel LEDs and servo motor 
 
 ---
 
-### `static/index.html` — Phone UI
+### `static/index.html` — Dev Dashboard
 
-A minimal dark-themed web page served at the root URL. Provides:
+A three-column dark-themed dashboard served at the root URL for dry-run testing without any physical hardware. Polls `GET /api/status` every second.
 
-- **NFC tap buttons** (simulated) — triggers auth for Peter or Alice
-- **View Inventory** — fetches and displays current items
-- **End Session** — stops the active conversation
-- **Activity log** — scrollable console showing server responses
+**Left panel — Controls:**
+- NFC tap buttons for Peter, Alice, Bob, and a new neighbor (simulated)
+- Lock toggle (unlock / lock)
+- Camera snap with configurable reason text
+- Lights controller (mode, row, col, color)
+- Log item form (name, user ID, deposit or retrieval)
 
-In production, the NFC tap would come from the phone's actual NFC reader calling the same `/api/auth/nfc` endpoint.
+**Center panel — Activity log:**
+- Real-time event stream merged from local interactions and server `station["events"]`
+- Color-coded by category: LOCK (amber), CAMERA (blue), LIGHTS (purple), LOG (green), AUTH (orange), CONV (green), ERROR (red)
+
+**Right panel — Hardware state:**
+- Lock icon (🔒/🔓) with current state
+- 3×10 LED grid — dots glow amber when active, dim amber when a slot holds an item
+- Last camera result (detected items)
+- Inventory list with `[row, col]` positions
+
+In production, the NFC tap comes from the phone's actual NFC reader calling the same `/api/auth/nfc` endpoint — the rest of the flow is identical.
+
+---
+
+### `station_state.py` — Shared Mock Hardware State
+
+An in-memory dict written to by mock hardware classes and read by `GET /api/status`.
+
+```python
+station = {
+    "lock": "locked",
+    "led": {"mode": "idle", "position": None, "color": None},
+    "camera": None,
+    "events": [],   # last 100 events, newest first
+}
+```
+
+`log_event(category, message, data=None)` appends timestamped events (kept at most 100). On a real Pi the hardware classes bypass this dict entirely.
+
+---
+
+### `routes/status.py` — Status Polling Endpoint
+
+`GET /api/status` returns the full station state in one payload:
+
+```json
+{
+  "conversation_active": false,
+  "lock": "locked",
+  "led": {"mode": "idle", "position": null, "color": null},
+  "camera": null,
+  "events": [...],
+  "inventory": [...]
+}
+```
+
+Imports the `inventory` singleton directly from `routes/tools` so both share the same in-memory store.
 
 ---
 
@@ -272,6 +328,23 @@ cloudflared tunnel --url http://localhost:8000
 # Terminal 3 (optional): Start a voice conversation directly
 python run_conversation.py --user Peter
 ```
+
+### Dry-Run Dashboard
+
+Once the server is running, open **http://localhost:8000** in your browser. You'll see the dev dashboard — no NFC reader, camera, LEDs, or microphone required.
+
+Walk through the full flow:
+1. Click **Peter** under "NFC Tap" — authenticates Peter, **unlocks the door immediately**, and starts the ElevenLabs conversation
+2. Watch the lock icon flip to 🔓 and the conversation dot turn green
+3. The agent should start speaking through your speakers within a second or two
+4. Click **Snap Photo** to simulate the camera identifying an item
+5. Click **Log Item** (deposit) to add it to inventory — it appears in the LED grid and inventory list
+6. Click **Lock** (or the agent calls it when done) — locks the door and ends the session
+7. Watch the lock icon flip back to 🔒 and the conversation dot go grey
+
+The Activity Log in the center column streams every server event in real time (hardware calls, NFC auth, inventory changes). The right column shows live hardware state.
+
+---
 
 ### Testing endpoints without voice
 ```bash
@@ -312,9 +385,10 @@ You are NOT a general assistant. You only help with:
 - Chatting briefly about items and community context
 - Controlling the physical station (camera, lights, lock)
 CONVERSATION FLOW:
-1. User authenticates via NFC → you receive their name, history, and `is_new_user`
-   via dynamic variables. If `is_new_user` is "true", welcome them as a brand-new
-   neighbor — introduce yourself, ask their name, and offer to remember them next time.
+1. The door is already unlocked when you start speaking — the server opens it automatically
+   on NFC tap. You receive the user's name, history, and `is_new_user` via dynamic variables.
+   If `is_new_user` is "true", welcome them as a brand-new neighbor — introduce yourself,
+   ask their name, and offer to remember them next time.
 2. Ask what they're doing (dropping off or picking up)
 3. If dropping off: trigger camera to identify item, confirm with user, log it, ask for a mini review
 4. If picking up: tell them what's available, let them choose, trigger camera to confirm removal, log it
@@ -327,8 +401,8 @@ TOOL USAGE:
 - Call `update_user_info` to save nicknames, preferences, or conversation memories
 - Call `control_lights` to light up LED positions showing where items are.
   Positions are [row, col] in a 3-row × 10-column grid (both 0-indexed).
-- Call `control_lock` to unlock/lock the door after authentication.
-  Calling `control_lock("lock")` closes the door AND ends the conversation.
+- Call `control_lock("lock")` when done — this closes the door AND ends the conversation.
+  Do NOT call control_lock("unlock") — the door is already open when you start speaking.
 Never fabricate what's in the box. Always use the camera or inventory tools.
 Keep conversations SHORT — 3-4 exchanges max unless the user wants to chat.
 ```
@@ -339,62 +413,34 @@ Keep conversations SHORT — 3-4 exchanges max unless the user wants to chat.
 
 | Component | Current (Hackathon) | Production |
 |-----------|-------------------|------------|
-| Inventory | In-memory list | Supabase `items` + `transactions` tables |
-| Users | In-memory dict | Supabase `users` + `user_memories` tables |
+| Inventory | Supabase (`items` + `transactions`) with in-memory fallback | Same tables, plus stricter validation and monitoring |
+| Users | Supabase (`users` + `memories`) | Same tables, plus auth/RLS hardening |
 | Camera | Mock (returns "Dune") | `pi_camera.py` with Picamera2 + Anthropic vision |
 | LEDs | Mock (console print) | NeoPixel via GPIO |
 | Lock | Mock (console print) | Servo via GPIO |
-| NFC mapping | Hardcoded dict | Supabase `users.nfc_id` lookup |
+| NFC mapping | Supabase lookup (`nfc_uuid`/`nfc_id` fallback) | Supabase lookup (`nfc_uuid`) |
 | Tunnel | cloudflared | cloudflared (same, running on Pi) |
 
 ---
 
 ## Future Steps / Roadmap
 
-### Step 1 — Migrate to Supabase
+### Step 1 — Keep DB Schema in Sync
 
-Replace the in-memory stores with a real database. The service interfaces stay the same; only the method bodies change.
+The active runtime client now lives in `database/client.py`, and services read collaborator tables under `database/`.
 
-**Tables to create:**
-```sql
--- users
-create table users (
-  id text primary key,          -- matches nfc_id for real users
-  nfc_id text unique,
-  name text,
-  nickname text,
-  preferences text,
-  memories jsonb default '[]'
-);
-
--- items (current inventory)
-create table items (
-  id serial primary key,
-  name text,
-  type text,
-  deposited_by text references users(id),
-  deposited_at timestamptz default now(),
-  condition text,
-  review text
-);
-
--- transactions (audit log)
-create table transactions (
-  id serial primary key,
-  item_id int references items(id),
-  action text,               -- 'deposit' or 'retrieval'
-  user_id text references users(id),
-  created_at timestamptz default now()
-);
-```
-
-**Migration steps:**
-1. Add `supabase-py` to `requirements.txt`
-2. Add `SUPABASE_URL` and `SUPABASE_KEY` to `.env`
-3. Rewrite `services/inventory.py` methods to call Supabase client
-4. Rewrite `services/users.py` methods similarly
-5. Update `routes/auth.py` to query `users.nfc_id` instead of the hardcoded dict
-6. Test with `curl` against local server before deploying
+Recommended workflow:
+1. Keep schema changes in `database/supabase/migrations/*.sql`
+2. Regenerate/check `database/schema.sql` when migrations change
+3. Set `SUPABASE_URL` + `SUPABASE_KEY` in `.env` and validate flows:
+   - `POST /api/auth/nfc`
+   - `POST /api/tools/log-item`
+   - `GET /api/tools/inventory`
+4. Confirm there are no Python imports from `max_supabase`:
+   ```bash
+   rg -n "from max_supabase|import max_supabase" --glob "*.py" .
+   ```
+5. Delete `max_supabase/` after the grep returns no matches (already removed in this repo state)
 
 ---
 

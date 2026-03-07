@@ -4,3 +4,4 @@ elevenlabs
 anthropic
 python-dotenv
 pyaudio
+supabase

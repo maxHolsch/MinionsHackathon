@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -7,6 +7,7 @@ from services.inventory import InventoryService
 from services.users import UserService
 from services.hardware import camera, leds, servo
 from conversation import manager as conversation_manager
+from station_state import log_event
 
 router = APIRouter()
 inventory = InventoryService()
@@ -53,12 +54,15 @@ async def snap_camera(req: CameraRequest):
 @router.post("/log-item")
 async def log_item(req: LogItemRequest):
     """Logs item deposit or retrieval."""
-    print(f"[LOG] {req.action} '{req.item_name}' by user {req.user_id}")
     if req.action == "deposit":
-        inventory.add(req.item_name, req.user_id, req.condition, req.review)
+        item = inventory.add(req.item_name, req.user_id, req.condition, req.review)
+        pos = item.get("position")
+        log_event("LOG", f"Deposited '{req.item_name}' by {req.user_id} → slot {pos}")
     elif req.action == "retrieval":
         inventory.remove(req.item_name, req.user_id)
-    return {"success": True, "inventory_count": len(inventory.items)}
+        log_event("LOG", f"Retrieved '{req.item_name}' by {req.user_id}")
+    count = len(inventory.items) if hasattr(inventory, "items") else len(inventory.list_all())
+    return {"success": True, "inventory_count": count}
 
 
 @router.get("/inventory")
@@ -72,7 +76,10 @@ async def get_inventory():
 async def update_user_info(req: UserInfoRequest):
     """Updates user information."""
     print(f"[USER] Update: {req.user_id} — nickname={req.nickname}, memory={req.memory}")
-    users.update(req.user_id, req.nickname, req.memory, req.preferences)
+    try:
+        users.update(req.user_id, req.nickname, req.memory, req.preferences)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     return {"success": True}
 
 
