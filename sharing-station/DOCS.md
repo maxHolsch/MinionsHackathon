@@ -254,9 +254,26 @@ The real camera implementation for Raspberry Pi:
 
 This is how the sharing station "sees" — the ElevenLabs agent calls the camera tool, the Pi takes a photo, Anthropic's vision model identifies the items, and the result goes back to the ElevenLabs agent to continue the conversation.
 
-### `hardware/pi_leds.py` / `hardware/pi_servo.py`
+### `hardware/pi_leds.py`
 
-Skeleton implementations for real GPIO-controlled NeoPixel LEDs and servo motor (for the door lock). These have TODO markers and need to be filled in with your specific hardware wiring.
+Real GPIO LED controller for the 3-row station grid. Uses `RPi.GPIO` on BCM pins 9 (row 1) and 10 (row 2) — extend the `LED_PINS` list for a third row when wired.
+
+**Modes:**
+- `idle` — all rows off
+- `highlight` — turns on the GPIO pin for the row specified in `position[0]`
+- `success` / `error` — all rows on
+
+Provides a `cleanup()` method to release GPIO on shutdown. The implementation was ported from the working `test/test_led.py` hardware test.
+
+### `hardware/pi_servo.py`
+
+Real PWM servo controller for the station door lock. Uses `RPi.GPIO` PWM on BCM pin 14 at 50 Hz.
+
+**Angle mapping:**
+- `set_lock("lock")` → servo to 0° (duty cycle 2.5%)
+- `set_lock("unlock")` → servo to 270° (duty cycle 12.5%)
+
+Stops the PWM signal after each movement to prevent jitter. Provides a `cleanup()` method to release PWM and GPIO on shutdown. The implementation was ported from the working `test/test_servo.py` hardware test.
 
 ---
 
@@ -593,8 +610,8 @@ Keep conversations SHORT — 3-4 exchanges max unless the user wants to chat.
 | Inventory | Supabase (`items` + `transactions`) | Same tables, plus stricter validation and monitoring |
 | Users | Supabase (`users` + `memories`) | Same tables, plus auth/RLS hardening |
 | Camera | Mock (returns "Dune") | `pi_camera.py` with Picamera2 + Anthropic vision |
-| LEDs | Mock (console print) | NeoPixel via GPIO |
-| Lock | Mock (console print) | Servo via GPIO |
+| LEDs | Mock (console print) | `pi_leds.py` — GPIO pins 9/10 per row (implemented) |
+| Lock | Mock (console print) | `pi_servo.py` — PWM on GPIO 14, 0°/270° (implemented) |
 | NFC mapping | Supabase lookup (`nfc_uuid`/`nfc_id` fallback) | Supabase lookup (`nfc_uuid`) |
 | Tunnel | Optional | Optional (only if remote internet access to local station UI/API is needed) |
 
@@ -627,10 +644,11 @@ Use the full **Raspberry Pi Porting Guide** section above for setup and boot aut
 
 After the base Pi deploy is up, remaining hardware-specific TODOs are:
 
-1. **Fill in `pi_leds.py`**: Initialize NeoPixel strip on GPIO pin, implement `set_mode` by mapping `[row, col]` → LED index (`row * 10 + col`) and setting color/animation
-2. **Fill in `pi_servo.py`**: Wire servo to a GPIO pin, implement `set_lock` with angle positions for locked/unlocked states
-3. **Set up `picamera2`**: Already implemented in `pi_camera.py` — just needs the Pi Camera module connected
+1. ~~**Fill in `pi_leds.py`**~~ — Done. GPIO pins 9/10 drive rows 1/2. Add a third pin to `LED_PINS` when row 3 is wired.
+2. ~~**Fill in `pi_servo.py`**~~ — Done. PWM on GPIO 14, 50 Hz. Lock = 0°, unlock = 270°.
+3. **Set up `picamera2`**: Already implemented in `pi_camera.py` — just needs the Pi Camera module connected.
 4. **NFC reader runtime process**: Wire an NFC reader (e.g., PN532) to SPI/I2C and run a background process that reads tags and calls `POST /api/auth/nfc`.
+5. **Distance sensor** (optional): A working test exists in `test/test_distance.py` (HC-SR04 on GPIO 23/24, 30 cm threshold). Not yet wired into the agent tools — integrate if proximity detection is needed.
 
 ---
 
