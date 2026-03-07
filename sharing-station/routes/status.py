@@ -15,9 +15,11 @@ async def get_status():
     """
     try:
         inventory_items = inventory.list_all()
+        checked_out_items = inventory.list_checked_out()
         inventory_error = None
     except RuntimeError as e:
         inventory_items = []
+        checked_out_items = []
         inventory_error = str(e)
 
     return {
@@ -27,5 +29,6 @@ async def get_status():
         "camera": station["camera"],
         "events": station["events"][:40],
         "inventory": inventory_items,
+        "checked_out": checked_out_items,
         "inventory_error": inventory_error,
     }

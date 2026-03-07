@@ -43,6 +43,62 @@ class InventoryService:
             rows = result.data or []
         return [self._normalize(item, i) for i, item in enumerate(rows)]
 
+    def list_checked_out(self):
+        """Returns all items currently checked out (borrowed), with borrower info."""
+        self._assert_supabase()
+        try:
+            borrowed_result = (
+                supabase.table("items")
+                .select("*")
+                .eq("status", "borrowed")
+                .order("created_at", desc=False)
+                .execute()
+            )
+            borrowed_rows = borrowed_result.data or []
+        except Exception:
+            return []
+
+        if not borrowed_rows:
+            return []
+
+        # Find latest check_out transaction per item to identify the borrower
+        tx_result = (
+            supabase.table("transactions")
+            .select("item_id,user_id,action,created_at")
+            .order("created_at", desc=False)
+            .execute()
+        )
+        latest_by_item = {}
+        for tx in (tx_result.data or []):
+            item_id = tx.get("item_id")
+            if item_id and tx.get("action") == "check_out":
+                latest_by_item[str(item_id)] = tx
+
+        # Collect borrower user IDs and fetch their names
+        borrower_ids = set()
+        for item in borrowed_rows:
+            tx = latest_by_item.get(str(item.get("id")))
+            if tx and tx.get("user_id"):
+                borrower_ids.add(str(tx["user_id"]))
+
+        borrower_names = {}
+        for uid in borrower_ids:
+            user = self._users.get(uid)
+            if user:
+                borrower_names[uid] = user.get("name") or user.get("nickname") or "unknown"
+
+        items = []
+        for item in borrowed_rows:
+            normalized = self._normalize(item)
+            tx = latest_by_item.get(str(item.get("id")))
+            if tx and tx.get("user_id"):
+                uid = str(tx["user_id"])
+                normalized["borrowed_by"] = borrower_names.get(uid, "unknown")
+            else:
+                normalized["borrowed_by"] = "unknown"
+            items.append(normalized)
+        return items
+
     def list_user_contributions(self, user_id):
         """Items currently available in the station that this user deposited."""
         self._assert_supabase()

@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 import time
@@ -33,15 +34,19 @@ class ConversationManager:
         self._users = UserService()
 
     def _error_result(self, message: str):
-        return {"success": False, "error": message}
+        return json.dumps({"success": False, "error": message})
 
     def _tool_snap_camera_photo(self, params: dict):
         reason = params.get("reason") or params.get("context") or "agent requested camera context"
-        return self._camera.capture_and_identify(reason)
+        return json.dumps(self._camera.capture_and_identify(reason))
 
     def _tool_get_inventory(self, params: dict):
         items = self._inventory.list_all()
-        return {"items": items, "count": len(items)}
+        return json.dumps({"items": items, "count": len(items)})
+
+    def _tool_get_available_slots(self, params: dict):
+        slots = self._inventory.get_available_slots()
+        return json.dumps({"available_slots": slots, "total_available": len(slots)})
 
     def _tool_log_item(self, params: dict):
         item_name = params.get("item_name") or params.get("name")
@@ -58,13 +63,19 @@ class ConversationManager:
             return self._error_result("action must be 'deposit' or 'retrieval'")
 
         if action == "deposit":
-            item = self._inventory.add(item_name, user_id, condition, review)
+            slot_row = params.get("slot_row")
+            slot_col = params.get("slot_col")
+            if slot_row is not None:
+                slot_row = int(slot_row)
+            if slot_col is not None:
+                slot_col = int(slot_col)
+            item = self._inventory.add(item_name, user_id, condition, review, slot_row, slot_col)
             count = len(self._inventory.list_all())
-            return {"success": True, "item": item, "inventory_count": count}
+            return json.dumps({"success": True, "item": item, "inventory_count": count})
 
         removed = self._inventory.remove(item_name, user_id)
         count = len(self._inventory.list_all())
-        return {"success": True, "item": removed, "inventory_count": count}
+        return json.dumps({"success": True, "item": removed, "inventory_count": count})
 
     def _tool_update_user_info(self, params: dict):
         user_id = params.get("user_id") or self._active_user_id
@@ -76,7 +87,7 @@ class ConversationManager:
             memory=params.get("memory"),
             preferences=params.get("preferences"),
         )
-        return {"success": True, "user": user}
+        return json.dumps({"success": True, "user": user})
 
     def _tool_control_lights(self, params: dict):
         mode = params.get("mode") or "idle"
@@ -87,7 +98,7 @@ class ConversationManager:
             if row is not None and col is not None:
                 position = [int(row), int(col)]
         color = params.get("color")
-        return self._leds.set_mode(mode, position, color)
+        return json.dumps(self._leds.set_mode(mode, position, color))
 
     def _tool_control_lock(self, params: dict):
         action = params.get("action") or "lock"
@@ -95,7 +106,7 @@ class ConversationManager:
         if action == "lock":
             # Close session shortly after lock command returns.
             threading.Thread(target=self.stop, daemon=True).start()
-        return result
+        return json.dumps(result)
 
     def _register_tool_aliases(self, client_tools: ClientTools, aliases: list[str], handler):
         for alias in aliases:
@@ -112,6 +123,11 @@ class ConversationManager:
             client_tools,
             ["get_inventory", "functions.get_inventory", "inventory", "functions.inventory"],
             self._tool_get_inventory,
+        )
+        self._register_tool_aliases(
+            client_tools,
+            ["get_available_slots", "functions.get_available_slots", "available_slots", "functions.available_slots"],
+            self._tool_get_available_slots,
         )
         self._register_tool_aliases(
             client_tools,
