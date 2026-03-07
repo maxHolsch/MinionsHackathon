@@ -350,6 +350,45 @@
   const API = window.location.origin;
   const logEl = document.getElementById('log');
   let currentMicMuted = false;
+  let activeConversation = null;
+  let activeUser = null;
+  let sdkModulePromise = null;
+
+  async function apiJson(path, options = {}) {
+    const res = await fetch(`${API}${path}`, options);
+    const text = await res.text();
+    let data = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (_) {
+        data = {};
+      }
+    }
+    if (!res.ok) {
+      throw new Error(data.detail || data.error || text || `Request failed (${res.status})`);
+    }
+    return data;
+  }
+
+  async function postJson(path, body) {
+    return apiJson(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function getConversationSdk() {
+    if (!sdkModulePromise) {
+      sdkModulePromise = import('https://cdn.jsdelivr.net/npm/@elevenlabs/client/+esm');
+    }
+    const sdk = await sdkModulePromise;
+    if (!sdk || !sdk.Conversation) {
+      throw new Error('Failed to load ElevenLabs browser SDK');
+    }
+    return sdk.Conversation;
+  }
 
   // ── Build LED grid ──
   const ledGrid = document.getElementById('led-grid');
@@ -382,6 +421,228 @@
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  function summarizeItems(items) {
+    const grouped = {};
+    for (const item of items || []) {
+      const name = (item && item.name) || 'Unknown';
+      if (!grouped[name]) {
+        grouped[name] = { name, type: item.type || 'unknown', copies: 0, positions: [] };
+      }
+      grouped[name].copies += 1;
+      if (Array.isArray(item.position)) grouped[name].positions.push(item.position);
+    }
+    const summaryItems = Object.values(grouped);
+    const summaryText = summaryItems.map(it => it.copies > 1 ? `${it.name} (${it.copies} available)` : it.name).join(', ') || 'nothing';
+    return { summaryItems, summaryText };
+  }
+
+  function summarizeItemNames(names) {
+    const counts = new Map();
+    for (const name of names || []) {
+      if (!name || !String(name).trim()) continue;
+      const key = String(name).trim();
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    if (counts.size === 0) return 'none';
+    return Array.from(counts.entries()).map(([name, count]) => count > 1 ? `${name} x${count}` : name).join(', ');
+  }
+
+  function buildContextUpdate(user) {
+    if (!user) return '';
+    const parts = [];
+    if (user.user_name) parts.push(`Authenticated user name: ${user.user_name}.`);
+    if (user.nickname) parts.push(`Nickname: ${user.nickname}.`);
+    if (user.user_id) parts.push(`User ID: ${user.user_id}.`);
+    parts.push(`New user: ${user.is_new_user ? 'yes' : 'no'}.`);
+    if (Array.isArray(user.memories) && user.memories.length > 0) {
+      parts.push(`Known memories/preferences: ${user.memories.join('; ')}.`);
+    }
+    const stationItems = summarizeItemNames(user.contributed_items || []);
+    const checkedOutItems = summarizeItemNames(user.checked_out_items || []);
+    const name = user.user_name || 'this user';
+    parts.push(`Items ${name} has deposited and are currently in the station: ${stationItems}.`);
+    parts.push(`Items ${name} currently has checked out: ${checkedOutItems}.`);
+    return parts.join(' ').trim();
+  }
+
+  function buildClientTools() {
+    const tools = {};
+    const register = (aliases, handler) => {
+      for (const alias of aliases) tools[alias] = handler;
+    };
+
+    register(
+      ['snap_camera_photo', 'functions.snap_camera_photo', 'camera', 'functions.camera'],
+      async (params = {}) => {
+        const reason = params.reason || params.context || 'agent requested camera context';
+        const prompt = params.prompt;
+        addEvent('CAMERA', `Agent tool: snap_camera_photo (${reason})`);
+        return postJson('/api/tools/camera', { reason, prompt });
+      }
+    );
+
+    register(
+      ['get_inventory', 'functions.get_inventory', 'inventory', 'functions.inventory'],
+      async () => {
+        const data = await apiJson('/api/tools/inventory');
+        const items = data.items || [];
+        const { summaryItems, summaryText } = summarizeItems(items);
+        addEvent('LOG', `Agent tool: get_inventory (${items.length} items)`);
+        return { summary: `Available items: ${summaryText}`, items: summaryItems, total_count: items.length };
+      }
+    );
+
+    register(
+      ['get_available_slots', 'functions.get_available_slots', 'available_slots', 'functions.available_slots'],
+      async () => {
+        addEvent('LOG', 'Agent tool: get_available_slots');
+        return apiJson('/api/tools/available-slots');
+      }
+    );
+
+    register(
+      ['log_item', 'functions.log_item', 'log-item', 'functions.log-item'],
+      async (params = {}) => {
+        const body = { ...params };
+        if (!body.user_id && activeUser && activeUser.user_id) {
+          body.user_id = activeUser.user_id;
+        }
+        addEvent('LOG', `Agent tool: log_item (${body.action || 'unknown'})`);
+        return postJson('/api/tools/log-item', body);
+      }
+    );
+
+    register(
+      ['update_user_info', 'functions.update_user_info', 'user_info', 'functions.user_info'],
+      async (params = {}) => {
+        const body = { ...params };
+        if (!body.user_id && activeUser && activeUser.user_id) {
+          body.user_id = activeUser.user_id;
+        }
+        addEvent('AUTH', 'Agent tool: update_user_info');
+        return postJson('/api/tools/user-info', body);
+      }
+    );
+
+    register(
+      ['control_lights', 'functions.control_lights', 'lights', 'functions.lights'],
+      async (params = {}) => {
+        let position = params.position;
+        if (!position && Number.isInteger(params.row) && Number.isInteger(params.col)) {
+          position = [params.row, params.col];
+        }
+        addEvent('LIGHTS', `Agent tool: control_lights (${params.mode || 'idle'})`);
+        return postJson('/api/tools/lights', {
+          mode: params.mode || 'idle',
+          position,
+          color: params.color,
+        });
+      }
+    );
+
+    register(
+      ['control_lock', 'functions.control_lock', 'lock', 'functions.lock'],
+      async (params = {}) => {
+        const action = params.action || 'lock';
+        addEvent('LOCK', `Agent tool: control_lock (${action})`);
+        const result = await postJson('/api/tools/lock', { action });
+        if (String(action).toLowerCase() === 'lock' && activeConversation) {
+          setTimeout(() => {
+            if (activeConversation) {
+              activeConversation.endSession().catch(() => {});
+            }
+          }, 350);
+        }
+        return result;
+      }
+    );
+
+    return tools;
+  }
+
+  async function syncConversationState(partialState) {
+    try {
+      await postJson('/conversation/state', partialState);
+    } catch (_) {
+      // Ignore state sync failures; session can still continue locally.
+    }
+  }
+
+  async function startWebRtcConversation(user) {
+    activeUser = user;
+    if (activeConversation) {
+      try {
+        await activeConversation.endSession();
+      } catch (_) {}
+      activeConversation = null;
+    }
+
+    addEvent('CONV', 'Preparing WebRTC session...');
+
+    try {
+      const preflight = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      preflight.getTracks().forEach(track => track.stop());
+    } catch (e) {
+      addEvent('ERROR', 'Microphone permission denied');
+      throw e;
+    }
+
+    const tokenData = await postJson('/conversation/token', {});
+    const Conversation = await getConversationSdk();
+
+    const options = {
+      connectionType: 'webrtc',
+      userId: user.user_id || undefined,
+      clientTools: buildClientTools(),
+      onConnect: async () => {
+        addEvent('CONV', 'WebRTC connected');
+        currentMicMuted = false;
+        await syncConversationState({
+          active: true,
+          mic_muted: false,
+          user_id: user.user_id || null,
+          user_name: user.user_name || null,
+        });
+      },
+      onDisconnect: async () => {
+        addEvent('CONV', 'WebRTC disconnected');
+        activeConversation = null;
+        currentMicMuted = false;
+        await syncConversationState({ active: false, mic_muted: false });
+      },
+      onModeChange: (modeEvent) => {
+        const mode = typeof modeEvent === 'string' ? modeEvent : (modeEvent && modeEvent.mode) || 'unknown';
+        addEvent('CONV', `Mode: ${mode}`);
+      },
+      onInterruption: () => {
+        addEvent('CONV', 'Interruption detected');
+      },
+      onError: (error) => {
+        addEvent('ERROR', `WebRTC error: ${error && error.message ? error.message : error}`);
+      },
+      onUnhandledClientToolCall: (event) => {
+        const toolName = event && event.toolName ? event.toolName : 'unknown';
+        addEvent('ERROR', `Unhandled client tool: ${toolName}`);
+      },
+    };
+
+    if (tokenData.conversation_token) {
+      options.conversationToken = tokenData.conversation_token;
+    } else {
+      options.agentId = tokenData.agent_id;
+    }
+
+    activeConversation = await Conversation.startSession(options);
+
+    const context = buildContextUpdate(user);
+    if (context) {
+      activeConversation.sendContextualUpdate(context);
+      addEvent('CONV', 'User context sent to agent');
+    }
+  }
+
   // ── Poll /api/status ──
   let lastEventSet = new Set();
 
@@ -395,7 +656,8 @@
       const dot = document.getElementById('conv-dot');
       const label = document.getElementById('conv-label');
       dot.className = d.conversation_active ? 'active' : '';
-      label.textContent = d.conversation_active ? 'Session active' : 'No session';
+      const modeLabel = d.conversation_mode || 'unknown';
+      label.textContent = d.conversation_active ? `Session active (${modeLabel})` : `No session (${modeLabel})`;
 
       // Mic mute state
       currentMicMuted = !!d.mic_muted;
@@ -488,16 +750,15 @@
   async function tapNfc(nfcId, label) {
     addEvent('AUTH', `NFC tap: ${label} (${nfcId})`);
     try {
-      const res = await fetch(`${API}/api/auth/nfc`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nfc_id: nfcId, name: label === 'New' ? null : label }),
-      });
-      const data = await res.json();
+      const data = await postJson('/api/auth/nfc', { nfc_id: nfcId, name: label === 'New' ? null : label });
       if (data.authenticated) {
         const who = data.nickname ? `${data.user_name} aka "${data.nickname}"` : data.user_name;
         addEvent('AUTH', `Authenticated → ${who}${data.is_new_user ? ' [NEW USER]' : ''}`);
-        addEvent('CONV', 'Conversation starting in background…');
+        if ((data.conversation_mode || 'webrtc') === 'webrtc') {
+          await startWebRtcConversation(data);
+        } else {
+          addEvent('CONV', 'Server-side conversation started');
+        }
       } else {
         addEvent('ERROR', `Auth failed: ${JSON.stringify(data)}`);
       }
@@ -586,7 +847,12 @@
   async function stopConversation() {
     addEvent('CONV', 'Stopping session…');
     try {
+      if (activeConversation) {
+        await activeConversation.endSession();
+      }
       await fetch(`${API}/conversation/stop`, { method: 'POST' });
+      activeConversation = null;
+      currentMicMuted = false;
       addEvent('CONV', 'Session stopped');
     } catch (e) {
       addEvent('ERROR', e.message);
@@ -594,14 +860,14 @@
   }
 
   async function setMicMuted(muted) {
+    if (!activeConversation) {
+      addEvent('ERROR', 'No active WebRTC session');
+      return;
+    }
     try {
-      const res = await fetch(`${API}/conversation/mic`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ muted }),
-      });
-      const data = await res.json();
-      currentMicMuted = !!data.mic_muted;
+      activeConversation.setMicMuted(!!muted);
+      const data = await postJson('/conversation/mic', { muted: !!muted });
+      currentMicMuted = Boolean(data.mic_muted);
       addEvent('CONV', `Mic ${currentMicMuted ? 'muted' : 'unmuted'}`);
     } catch (e) {
       addEvent('ERROR', e.message);

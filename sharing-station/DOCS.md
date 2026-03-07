@@ -11,12 +11,12 @@ A voice-powered community sharing station where neighbors lend and borrow books,
 │                    ElevenLabs Cloud                       │
 │              (Voice AI Agent + LLM + TTS)                │
 │                                                          │
-│  ┌─────────────┐    ┌──────────────────────────────────┐ │
-│  │ Microphone   │───>│ Speech-to-Text → LLM → Text-to- ││
-│  │ (PyAudio)    │<───│ Speech → Speaker                 ││
-│  └─────────────┘    └──────────┬───────────────────────┘ │
+│  ┌──────────────────────────────────────────────────────┐ │
+│  │ Browser WebRTC Audio (mic + speaker on phone / Pi)  │ │
+│  │ Speech-to-Text → LLM → Text-to-Speech               │ │
+│  └──────────────────────────────┬───────────────────────┘ │
 └─────────────────────────────────┼────────────────────────┘
-                                  │ Tool calls (webhooks)
+                                  │ Tool calls (client tools via browser)
                                   ▼
 ┌──────────────────────────────────────────────────────────┐
 │                  FastAPI Server (your machine)            │
@@ -29,8 +29,9 @@ A voice-powered community sharing station where neighbors lend and borrow books,
 │  /api/tools/lock        → services/hardware → servo      │
 │  /api/auth/nfc          → services/users                 │
 │                                                          │
-│  /conversation/start    → conversation.py (ElevenLabs)   │
-│  /conversation/stop     → conversation.py                │
+│  /conversation/token    → ElevenLabs conversation token  │
+│  /conversation/state    → web session status             │
+│  /conversation/stop     → stop/reset session state       │
 │  /health                → status check                   │
 │  /                      → static/index.html (phone UI)   │
 └──────────────────────────────────────────────────────────┘
@@ -40,10 +41,10 @@ A voice-powered community sharing station where neighbors lend and borrow books,
 
 1. **User taps NFC tag** on phone → phone calls `POST /api/auth/nfc` with the tag ID
 2. Server maps NFC ID to a known user and returns their profile
-3. Phone (or server) calls `POST /conversation/start?user_name=Peter`
-4. ElevenLabs agent opens a WebSocket, greets the user by name via speaker
+3. Phone/web dashboard requests `POST /conversation/token`
+4. Browser starts ElevenLabs session via **WebRTC** and sends user context
 5. **User speaks** → ElevenLabs transcribes → LLM decides what to do
-6. If the LLM needs to take an action, it fires a **tool call** (webhook) to your server
+6. If the LLM needs to take an action, it fires a **client tool call** handled in the browser, which then calls your server API
 7. Your server executes the action (take photo, log item, etc.) and returns a result
 8. The LLM uses the result to continue the conversation
 9. When done, the session ends and `POST /conversation/stop` is called
@@ -58,7 +59,7 @@ The FastAPI application that ties everything together.
 
 - **Lifespan handler**: Prints startup/shutdown messages and ensures the conversation is cleaned up on exit.
 - **Router mounting**: Includes the tool endpoints at `/api/tools/` and auth at `/api/auth/`.
-- **Conversation endpoints**: `POST /conversation/start` and `POST /conversation/stop` let you start/stop voice sessions via API (useful for testing or triggering from the phone UI).
+- **Conversation endpoints**: `POST /conversation/token`, `POST /conversation/state`, `POST /conversation/mic`, `POST /conversation/stop`.
 - **Static files**: Mounted last at `/` so it serves `static/index.html` for the phone UI without intercepting API routes.
 - **Health check**: `GET /health` returns server status and whether a conversation is active.
 
@@ -75,6 +76,7 @@ Run with: `python main.py` (starts uvicorn on port 8000).
 | `ELEVENLABS_API_KEY` | Authenticates with ElevenLabs API |
 | `ELEVENLABS_AGENT_ID` | Identifies which ElevenLabs agent to use |
 | `ANTHROPIC_API_KEY` | Used by the Pi camera for vision-based item identification |
+| `VOICE_RUNTIME` | `webrtc` (default) or `python` fallback for server-side audio |
 | `SUPABASE_URL` | Supabase project URL used by `database/client.py` |
 | `SUPABASE_KEY` | Supabase anon/service key used by `database/client.py` |
 
@@ -91,7 +93,7 @@ The `ConversationManager` class wraps the ElevenLabs Conversational AI SDK.
 - **`stop()`**: Ends the session and waits for cleanup.
 - **`wait()`**: Blocks until the session ends (used by the CLI runner).
 
-The ElevenLabs SDK handles all the real-time audio streaming, speech-to-text, LLM inference, and text-to-speech. Your server just needs to respond to tool call webhooks.
+This module is the legacy/server-audio path (`VOICE_RUNTIME=python`). In the default WebRTC flow, browser clients own mic/speaker and this file is not used by request routes.
 
 ---
 
@@ -105,6 +107,20 @@ python run_conversation.py --user Alice # Start as Alice
 ```
 
 Useful for quick testing. Press `Ctrl+C` to stop.
+
+---
+
+### `deploy/install_pi_services.sh` — Boot Automation Installer
+
+Installs two `systemd` services on Raspberry Pi:
+- `sharing-station-backend.service`: starts FastAPI with `VOICE_RUNTIME=webrtc`
+- `sharing-station-kiosk.service`: starts Chromium in kiosk mode on `http://localhost:8000/`
+
+It auto-detects your project path and writes service files to `/etc/systemd/system/`.
+
+### `deploy/start_chromium_kiosk.sh` — Kiosk Launcher
+
+Minimal Chromium launcher used by the kiosk service. It enables full-screen mode and auto media permission UI suppression for unattended station use.
 
 ---
 
@@ -310,9 +326,10 @@ Imports the `inventory` singleton directly from `routes/tools`.
 
 ### Prerequisites
 - Python 3.10+
-- PortAudio system library (`brew install portaudio` on macOS)
+- Chromium browser (for WebRTC kiosk/client mode)
 - ElevenLabs account with a Conversational AI agent configured
 - Anthropic API key (for Pi camera vision, optional on desktop)
+- PortAudio system library only if using legacy server-audio mode (`VOICE_RUNTIME=python`)
 
 ### Setup
 ```bash
@@ -329,10 +346,8 @@ cp .env.example .env
 # Terminal 1: Start the server
 python main.py
 
-# Terminal 2: Expose to internet for ElevenLabs webhooks
-cloudflared tunnel --url http://localhost:8000
-
-# Terminal 3 (optional): Start a voice conversation directly
+# Terminal 2 (optional, legacy mode only): Start a server-audio conversation directly
+# Requires VOICE_RUNTIME=python and PyAudio/PortAudio
 python run_conversation.py --user Peter
 ```
 
@@ -341,7 +356,7 @@ python run_conversation.py --user Peter
 Once the server is running, open **http://localhost:8000** in your browser. You'll see the dev dashboard — no NFC reader, camera, LEDs, or microphone required.
 
 Walk through the full flow:
-1. Click **Peter** under "NFC Tap" — authenticates Peter, **unlocks the door immediately**, and starts the ElevenLabs conversation
+1. Click **Peter** under "NFC Tap" — authenticates Peter, **unlocks the door immediately**, and starts a browser WebRTC conversation
 2. Watch the lock icon flip to 🔓 and the conversation dot turn green
 3. The agent should start speaking through your speakers within a second or two
 4. Click **Snap Photo** to simulate the camera identifying an item
@@ -371,6 +386,147 @@ curl -X POST http://localhost:8000/api/tools/camera \
   -H "Content-Type: application/json" \
   -d '{"reason": "user deposited an item"}'
 ```
+
+---
+
+## Raspberry Pi Porting Guide
+
+This section is the full handoff for running the station on Raspberry Pi with the current **WebRTC-first** architecture.
+
+### Target Architecture on Pi
+
+- FastAPI backend runs as a `systemd` service
+- Chromium runs in fullscreen kiosk mode on boot
+- Browser owns mic/speaker via ElevenLabs WebRTC
+- Python backend owns tools, Supabase, and hardware (camera/LEDs/servo)
+
+### 1. Pi OS + Hardware Baseline
+
+1. Use Raspberry Pi OS (Bookworm) with Desktop.
+2. Connect microphone + speaker (or headset).
+3. Connect camera module and validate:
+   ```bash
+   libcamera-hello
+   ```
+4. If using GPIO hardware, wire LEDs + servo and confirm power stability.
+
+### 2. Install System Packages
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv python3-pip chromium-browser
+```
+
+If you plan to run legacy server-audio mode (`VOICE_RUNTIME=python`), also install:
+
+```bash
+sudo apt install -y portaudio19-dev
+```
+
+### 3. Clone and Install Project
+
+```bash
+cd ~
+git clone <your-repo-url> MinionsHackathon
+cd MinionsHackathon/MinionsHackathon/sharing-station
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Edit `.env` and set at least:
+
+- `ELEVENLABS_API_KEY`
+- `ELEVENLABS_AGENT_ID`
+- `SUPABASE_URL`
+- `SUPABASE_KEY`
+- `VOICE_RUNTIME=webrtc`
+
+### 4. One-Time Smoke Test Before Services
+
+```bash
+source venv/bin/activate
+python main.py
+```
+
+Then from Pi browser (or another device on LAN), open:
+
+- `http://<pi-ip>:8000`
+- tap a mock NFC user in dashboard
+- confirm WebRTC connects and agent speaks
+
+### 5. Install Boot Services (Backend + Kiosk)
+
+From `sharing-station/`:
+
+```bash
+chmod +x deploy/*.sh
+./deploy/install_pi_services.sh
+```
+
+This installs and enables:
+
+- `sharing-station-backend.service`
+- `sharing-station-kiosk.service`
+
+### 6. Verify Service Health
+
+```bash
+sudo systemctl status sharing-station-backend.service
+sudo systemctl status sharing-station-kiosk.service
+journalctl -u sharing-station-backend.service -n 100 --no-pager
+journalctl -u sharing-station-kiosk.service -n 100 --no-pager
+```
+
+Reboot test:
+
+```bash
+sudo reboot
+```
+
+After reboot, backend should be up and Chromium should auto-open `http://localhost:8000/`.
+
+### 7. Day-2 Operations
+
+Restart services after pulls/config changes:
+
+```bash
+sudo systemctl restart sharing-station-backend.service
+sudo systemctl restart sharing-station-kiosk.service
+```
+
+Disable kiosk temporarily (keep backend running):
+
+```bash
+sudo systemctl stop sharing-station-kiosk.service
+sudo systemctl disable sharing-station-kiosk.service
+```
+
+Re-enable kiosk:
+
+```bash
+sudo systemctl enable --now sharing-station-kiosk.service
+```
+
+### 8. NFC Integration on Pi
+
+- In production, your NFC reader process should call `POST /api/auth/nfc` on tag scan.
+- The response gives user context; browser session then starts/continues WebRTC flow.
+- During development, the dashboard NFC buttons are enough.
+
+### 9. Common Pi Issues
+
+1. No kiosk window on boot:
+   - Verify desktop autologin is enabled.
+   - Check `DISPLAY=:0` and `XAUTHORITY=/home/<user>/.Xauthority` in kiosk service.
+2. No mic/speaker audio:
+   - Verify default devices and volumes via OS sound settings.
+   - Test in Chromium with any mic test page.
+3. ElevenLabs token errors:
+   - Check `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID` in `.env`.
+4. Want old server-audio mode:
+   - Set `VOICE_RUNTIME=python`, install PortAudio, and use `run_conversation.py`.
 
 ---
 
@@ -440,7 +596,7 @@ Keep conversations SHORT — 3-4 exchanges max unless the user wants to chat.
 | LEDs | Mock (console print) | NeoPixel via GPIO |
 | Lock | Mock (console print) | Servo via GPIO |
 | NFC mapping | Supabase lookup (`nfc_uuid`/`nfc_id` fallback) | Supabase lookup (`nfc_uuid`) |
-| Tunnel | cloudflared | cloudflared (same, running on Pi) |
+| Tunnel | Optional | Optional (only if remote internet access to local station UI/API is needed) |
 
 ---
 
@@ -467,26 +623,14 @@ Recommended workflow:
 
 ### Step 2 — Move to Raspberry Pi
 
-The `services/hardware.py` file already auto-detects Pi vs desktop. The remaining TODOs are:
+Use the full **Raspberry Pi Porting Guide** section above for setup and boot automation.
+
+After the base Pi deploy is up, remaining hardware-specific TODOs are:
 
 1. **Fill in `pi_leds.py`**: Initialize NeoPixel strip on GPIO pin, implement `set_mode` by mapping `[row, col]` → LED index (`row * 10 + col`) and setting color/animation
 2. **Fill in `pi_servo.py`**: Wire servo to a GPIO pin, implement `set_lock` with angle positions for locked/unlocked states
 3. **Set up `picamera2`**: Already implemented in `pi_camera.py` — just needs the Pi Camera module connected
-4. **NFC reader**: Wire an NFC reader (e.g., PN532) to SPI/I2C, write a small script that calls `POST /api/auth/nfc` when a tag is scanned, then calls `POST /conversation/start`
-5. **Run as a service**: Create a systemd unit file so the server starts on boot:
-   ```ini
-   [Unit]
-   Description=Sharing Station
-   After=network.target
-
-   [Service]
-   WorkingDirectory=/home/pi/sharing-station
-   ExecStart=/home/pi/sharing-station/venv/bin/python main.py
-   Restart=always
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
+4. **NFC reader runtime process**: Wire an NFC reader (e.g., PN532) to SPI/I2C and run a background process that reads tags and calls `POST /api/auth/nfc`.
 
 ---
 
@@ -503,7 +647,7 @@ The goal: make changes on your laptop and see them running on the Pi in seconds.
    uvicorn main:app --reload --host 0.0.0.0 --port 8000
    ```
 
-3. **cloudflared stays running** — keep the tunnel alive in a separate terminal so ElevenLabs always hits the same public URL. The server restarts underneath it without breaking the tunnel.
+3. **cloudflared optional** — only needed if you want remote internet access to the local Pi dashboard/API.
 
 4. **Phone UI as test client** — open `http://raspberrypi.local:8000` on your phone to trigger NFC taps, view inventory, and start/stop conversations without touching physical hardware.
 

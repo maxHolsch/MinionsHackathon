@@ -3,11 +3,16 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 
+from config import VOICE_RUNTIME
 from services.inventory import InventoryService
 from services.users import UserService
 from services.hardware import camera, leds, servo
-from conversation import manager as conversation_manager
-from station_state import log_event
+from station_state import log_event, set_conversation_state
+
+USE_WEBRTC = VOICE_RUNTIME == "webrtc"
+
+if not USE_WEBRTC:
+    from conversation import manager as conversation_manager
 
 router = APIRouter()
 inventory = InventoryService()
@@ -119,9 +124,13 @@ async def control_lock(req: LockRequest):
     print(f"[LOCK] {req.action}")
     result = servo.set_lock(req.action)
     if req.action == "lock":
-        # End the conversation after the response is returned
-        async def _end_conversation():
-            await asyncio.sleep(0.5)
-            await asyncio.to_thread(conversation_manager.stop)
-        asyncio.create_task(_end_conversation())
+        if USE_WEBRTC:
+            set_conversation_state(active=False, mic_muted=False)
+            log_event("CONV", "Session ended after lock action")
+        else:
+            # End the conversation after the response is returned
+            async def _end_conversation():
+                await asyncio.sleep(0.5)
+                await asyncio.to_thread(conversation_manager.stop)
+            asyncio.create_task(_end_conversation())
     return result

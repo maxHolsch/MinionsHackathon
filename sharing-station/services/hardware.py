@@ -11,7 +11,12 @@ if is_raspberry_pi():
     from hardware.pi_leds import PiLEDs
     from hardware.pi_servo import PiServo
 else:
-    from hardware.mock_camera import MockCamera as PiCamera
+    # Use real USB camera with Claude vision when opencv is available
+    try:
+        import cv2  # noqa: F401
+        from hardware.usb_camera import USBCamera as PiCamera
+    except ImportError:
+        from hardware.mock_camera import MockCamera as PiCamera
     from hardware.mock_leds import MockLEDs as PiLEDs
     from hardware.mock_servo import MockServo as PiServo
 

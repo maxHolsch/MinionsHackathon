@@ -1,17 +1,28 @@
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from config import ELEVENLABS_AGENT_ID, ELEVENLABS_API_KEY, VOICE_RUNTIME
 from routes.tools import router as tools_router
 from routes.auth import router as auth_router
 from routes.status import router as status_router
-from conversation import manager as conversation_manager
 from services.inventory import InventoryService
+from station_state import set_conversation_state, station
+
+USE_WEBRTC = VOICE_RUNTIME == "webrtc"
+
+if not USE_WEBRTC:
+    from conversation import manager as conversation_manager
 
 
 @asynccontextmanager
@@ -21,7 +32,8 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     print("[SERVER] Shutting down...")
-    conversation_manager.stop()
+    if not USE_WEBRTC:
+        conversation_manager.stop()
 
 
 app = FastAPI(title="Sharing Station", lifespan=lifespan)
@@ -32,7 +44,105 @@ app.include_router(status_router, prefix="/api")
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "conversation_active": conversation_manager.is_active}
+    if USE_WEBRTC:
+        conversation_active = bool(station.get("conversation", {}).get("active"))
+    else:
+        conversation_active = conversation_manager.is_active
+    return {
+        "status": "ok",
+        "voice_runtime": VOICE_RUNTIME,
+        "conversation_active": conversation_active,
+    }
+
+
+class ConversationMicRequest(BaseModel):
+    muted: bool
+
+
+class ConversationStateRequest(BaseModel):
+    active: bool | None = None
+    mic_muted: bool | None = None
+    user_id: str | None = None
+    user_name: str | None = None
+
+
+def _fetch_webrtc_token() -> str:
+    if not ELEVENLABS_AGENT_ID:
+        raise HTTPException(status_code=500, detail="ELEVENLABS_AGENT_ID is missing")
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=500, detail="ELEVENLABS_API_KEY is missing")
+
+    token_url = (
+        "https://api.elevenlabs.io/v1/convai/conversation/token"
+        f"?agent_id={quote(ELEVENLABS_AGENT_ID)}"
+    )
+    request = Request(token_url, headers={"xi-api-key": ELEVENLABS_API_KEY}, method="GET")
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise HTTPException(
+            status_code=502,
+            detail=f"ElevenLabs token request failed ({e.code}): {body}",
+        )
+    except URLError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to reach ElevenLabs: {e}")
+
+    token = payload.get("token")
+    if not token:
+        raise HTTPException(status_code=502, detail=f"Token missing in ElevenLabs response: {payload}")
+    return token
+
+
+@app.post("/conversation/token")
+async def get_conversation_token():
+    """
+    Returns credentials for browser-side WebRTC session startup.
+    Keeps API key server-side so Pi/browser clients stay simple.
+    """
+    if not ELEVENLABS_AGENT_ID:
+        raise HTTPException(status_code=500, detail="ELEVENLABS_AGENT_ID is missing")
+
+    if ELEVENLABS_API_KEY:
+        conversation_token = _fetch_webrtc_token()
+        return {
+            "conversation_token": conversation_token,
+            "agent_id": ELEVENLABS_AGENT_ID,
+            "connection_type": "webrtc",
+            "mode": "private",
+            "voice_runtime": VOICE_RUNTIME,
+        }
+
+    # Public agents can start directly with just agent_id.
+    return {
+        "agent_id": ELEVENLABS_AGENT_ID,
+        "connection_type": "webrtc",
+        "mode": "public",
+        "voice_runtime": VOICE_RUNTIME,
+    }
+
+
+@app.post("/conversation/state")
+async def set_conversation_state_endpoint(req: ConversationStateRequest):
+    """
+    Browser client updates session state here (active, mic muted, current user).
+    Useful for dashboard/status visibility in WebRTC mode.
+    """
+    state = set_conversation_state(
+        active=req.active,
+        mic_muted=req.mic_muted,
+        user_id=req.user_id,
+        user_name=req.user_name,
+        mode=VOICE_RUNTIME,
+    )
+    return {"status": "ok", "voice_runtime": VOICE_RUNTIME, "conversation": state}
+
+
+@app.post("/conversation/mic")
+async def set_conversation_mic(req: ConversationMicRequest):
+    state = set_conversation_state(mic_muted=req.muted, mode=VOICE_RUNTIME)
+    return {"status": "ok", "voice_runtime": VOICE_RUNTIME, "mic_muted": state["mic_muted"]}
 
 
 @app.post("/conversation/start")
@@ -60,19 +170,51 @@ async def start_conversation(user_name: str = "Unknown", user_id: str = None,
         except RuntimeError:
             contributed_items = []
             checked_out_items = []
-    conversation_manager.start(user_name=resolved_user_name, user_id=user_id,
-                                nickname=nickname, memories=memories,
-                                contributed_items=contributed_items,
-                                checked_out_items=checked_out_items,
-                                is_new_user=is_new_user)
-    return {"status": "started", "user": resolved_user_name, "is_new_user": is_new_user}
+
+    if USE_WEBRTC:
+        set_conversation_state(
+            active=False,
+            mic_muted=False,
+            user_id=user_id,
+            user_name=resolved_user_name,
+            mode=VOICE_RUNTIME,
+        )
+        return {
+            "status": "ready",
+            "voice_runtime": VOICE_RUNTIME,
+            "user": resolved_user_name,
+            "user_id": user_id,
+            "nickname": nickname,
+            "memories": memories,
+            "contributed_items": contributed_items,
+            "checked_out_items": checked_out_items,
+            "is_new_user": is_new_user,
+            "conversation_started": False,
+        }
+
+    conversation_manager.start(
+        user_name=resolved_user_name,
+        user_id=user_id,
+        nickname=nickname,
+        memories=memories,
+        contributed_items=contributed_items,
+        checked_out_items=checked_out_items,
+        is_new_user=is_new_user,
+    )
+    set_conversation_state(active=True, user_id=user_id, user_name=resolved_user_name, mode="python")
+    return {"status": "started", "voice_runtime": "python", "user": resolved_user_name, "is_new_user": is_new_user}
 
 
 @app.post("/conversation/stop")
 async def stop_conversation():
     """Stop the current conversation session."""
+    if USE_WEBRTC:
+        set_conversation_state(active=False, mic_muted=False, mode="webrtc")
+        return {"status": "stopped", "voice_runtime": "webrtc"}
+
     conversation_manager.stop()
-    return {"status": "stopped"}
+    set_conversation_state(active=False, mic_muted=False, mode="python")
+    return {"status": "stopped", "voice_runtime": "python"}
 
 
 
