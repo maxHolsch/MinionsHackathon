@@ -87,8 +87,9 @@ TOOL_CONFIGS = [
             "Log an item being deposited into or retrieved from the station. "
             "Call this AFTER confirming the item identity with the user. "
             "action must be 'deposit' or 'retrieval'. "
-            "For deposits, include slot_row and slot_col to record which physical "
-            "slot the item was placed in (from get_available_slots)."
+            "For deposits, include slots_needed (from the camera's estimated size) so "
+            "the system can find a contiguous block of slots with spacing between items. "
+            "The system auto-assigns the best position — you do NOT need to pick a slot yourself."
         ),
         "response_timeout_secs": 10,
         "expects_response": True,
@@ -104,13 +105,13 @@ TOOL_CONFIGS = [
                 "user_id": {"type": "string", "description": "ID of the user performing the action"},
                 "condition": {"type": "string", "description": "Condition of the item (for deposits)"},
                 "review": {"type": "string", "description": "Short user review or comment about the item"},
-                "slot_row": {
+                "slots_needed": {
                     "type": "integer",
-                    "description": "Row (0-2) of the physical slot where the item is placed (for deposits)",
-                },
-                "slot_col": {
-                    "type": "integer",
-                    "description": "Column (0-9) of the physical slot where the item is placed (for deposits)",
+                    "description": (
+                        "How many contiguous grid columns the item needs (from the camera's slots_needed estimate). "
+                        "Rough guide: small accessory=1, paperback=2, hardcover book=3, board game=6-8. "
+                        "Defaults to 1 if omitted."
+                    ),
                 },
             },
             "required": ["item_name", "action", "user_id"],
@@ -142,7 +143,8 @@ TOOL_CONFIGS = [
         "description": (
             "Control the LED lights on the station to highlight item positions. "
             "Use mode 'highlight' with a position to show where an item is, "
-            "or 'idle' to return to default."
+            "or 'idle' to return to default. "
+            "For multi-slot items, set slot_count to highlight a contiguous range of columns."
         ),
         "response_timeout_secs": 5,
         "expects_response": True,
@@ -151,7 +153,8 @@ TOOL_CONFIGS = [
             "properties": {
                 "mode": {"type": "string", "description": "Light mode: 'idle', 'highlight', 'success', 'error'"},
                 "row": {"type": "integer", "description": "Row position (0-2) of the item to highlight"},
-                "col": {"type": "integer", "description": "Column position (0-9) of the item to highlight"},
+                "col": {"type": "integer", "description": "Starting column position (0-9) of the item to highlight"},
+                "slot_count": {"type": "integer", "description": "Number of contiguous columns to highlight (default 1)"},
                 "color": {"type": "string", "description": "Color for the lights (e.g. 'green', 'red', 'blue')"},
             },
             "required": ["mode"],

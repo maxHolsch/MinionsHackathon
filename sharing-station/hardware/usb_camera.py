@@ -10,7 +10,9 @@ DEFAULT_VISION_PROMPT = (
     "You are the vision system for a community sharing station. "
     "Identify any items (books, board games, objects) visible in this image. "
     "Context: {reason}. "
-    'Return JSON: {{"items_detected": [{{"name": "...", "type": "book|board_game|other", "condition": "...", "estimated_size": "small|medium|large"}}], "raw_description": "..."}}'
+    "For each item, estimate how many grid slots (each ~10cm wide) it needs to sit flat. "
+    "Guidelines: a paperback book ≈ 2 slots, a large hardcover ≈ 3, a board game box ≈ 6-8, a small accessory ≈ 1. "
+    'Return JSON: {{"items_detected": [{{"name": "...", "type": "book|board_game|other", "condition": "...", "estimated_size": "small|medium|large", "slots_needed": <int>}}], "raw_description": "..."}}'
 )
 
 

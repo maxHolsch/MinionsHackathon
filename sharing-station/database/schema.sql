@@ -17,6 +17,7 @@ create table items (
   donated_by  uuid references users(id) on delete set null,
   slot_row    integer check (slot_row >= 0 and slot_row <= 2),
   slot_col    integer check (slot_col >= 0 and slot_col <= 9),
+  slot_count  integer not null default 1 check (slot_count >= 1 and slot_count <= 10),
   created_at  timestamptz default now()
 );
 

@@ -32,6 +32,7 @@ class LogItemRequest(BaseModel):
     review: Optional[str] = None
     slot_row: Optional[int] = None  # Physical row (0-2) in 3×10 grid
     slot_col: Optional[int] = None  # Physical col (0-9) in 3×10 grid
+    slots_needed: Optional[int] = None  # How many contiguous columns the item needs
 
 
 class UserInfoRequest(BaseModel):
@@ -45,6 +46,7 @@ class LightsRequest(BaseModel):
     mode: str
     position: Optional[List[int]] = None  # [row, col] — 3 rows × 10 cols (0-indexed)
     color: Optional[str] = None
+    slot_count: Optional[int] = None  # Number of contiguous columns to highlight
 
 
 class LockRequest(BaseModel):
@@ -64,7 +66,7 @@ async def log_item(req: LogItemRequest):
     """Logs item deposit or retrieval."""
     try:
         if req.action == "deposit":
-            item = inventory.add(req.item_name, req.user_id, req.condition, req.review, req.slot_row, req.slot_col)
+            item = inventory.add(req.item_name, req.user_id, req.condition, req.review, req.slot_row, req.slot_col, req.slots_needed)
             pos = item.get("position")
             log_event("LOG", f"Deposited '{req.item_name}' by {req.user_id} → slot {pos}")
         elif req.action == "retrieval":
@@ -113,8 +115,8 @@ async def update_user_info(req: UserInfoRequest):
 @router.post("/lights")
 async def control_lights(req: LightsRequest):
     """Controls LED lights inside the station."""
-    print(f"[LIGHTS] mode={req.mode}, position={req.position}, color={req.color}")
-    result = leds.set_mode(req.mode, req.position, req.color)
+    print(f"[LIGHTS] mode={req.mode}, position={req.position}, color={req.color}, slot_count={req.slot_count}")
+    result = leds.set_mode(req.mode, req.position, req.color, slot_count=req.slot_count)
     return result
 
 

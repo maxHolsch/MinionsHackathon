@@ -82,13 +82,10 @@ class ConversationManager:
             return self._error_result("action must be 'deposit' or 'retrieval'")
 
         if action == "deposit":
-            slot_row = params.get("slot_row")
-            slot_col = params.get("slot_col")
-            if slot_row is not None:
-                slot_row = int(slot_row)
-            if slot_col is not None:
-                slot_col = int(slot_col)
-            item = self._inventory.add(item_name, user_id, condition, review, slot_row, slot_col)
+            slots_needed = params.get("slots_needed")
+            if slots_needed is not None:
+                slots_needed = int(slots_needed)
+            item = self._inventory.add(item_name, user_id, condition, review, slots_needed=slots_needed)
             count = len(self._inventory.list_all())
             return json.dumps({"success": True, "item": item, "inventory_count": count})
 
@@ -116,8 +113,11 @@ class ConversationManager:
             col = params.get("col")
             if row is not None and col is not None:
                 position = [int(row), int(col)]
+        slot_count = params.get("slot_count")
+        if slot_count is not None:
+            slot_count = int(slot_count)
         color = params.get("color")
-        return json.dumps(self._leds.set_mode(mode, position, color))
+        return json.dumps(self._leds.set_mode(mode, position, color, slot_count=slot_count))
 
     def _tool_control_lock(self, params: dict):
         action = params.get("action") or "lock"

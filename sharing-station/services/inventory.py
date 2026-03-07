@@ -18,9 +18,9 @@ class InventoryService:
 
     # ── Public API ───────────────────────────────────────────────────────────
 
-    def add(self, name, user_id, condition=None, review=None, slot_row=None, slot_col=None):
+    def add(self, name, user_id, condition=None, review=None, slot_row=None, slot_col=None, slots_needed=None):
         self._assert_supabase()
-        return self._add_supabase(name, user_id, condition, review, slot_row, slot_col)
+        return self._add_supabase(name, user_id, condition, review, slot_row, slot_col, slots_needed)
 
     def remove(self, name, user_id):
         self._assert_supabase()
@@ -153,24 +153,55 @@ class InventoryService:
 
         return checked_out
 
-    def get_available_slots(self):
-        """Return [row, col] positions not occupied by an available item."""
+    def _get_occupied_slots(self):
+        """Return a set of (row, col) tuples occupied by available items, accounting for multi-slot items."""
         self._assert_supabase()
         result = (
             supabase.table("items")
-            .select("slot_row, slot_col")
+            .select("slot_row, slot_col, slot_count")
             .eq("status", "available")
             .not_.is_("slot_row", "null")
             .not_.is_("slot_col", "null")
             .execute()
         )
-        occupied = {(r["slot_row"], r["slot_col"]) for r in (result.data or [])}
+        occupied = set()
+        for r in (result.data or []):
+            row, col = r["slot_row"], r["slot_col"]
+            count = r.get("slot_count") or 1
+            for c in range(col, min(col + count, GRID_COLS)):
+                occupied.add((row, c))
+        return occupied
+
+    def get_available_slots(self):
+        """Return [row, col] positions not occupied by an available item."""
+        occupied = self._get_occupied_slots()
         return [
             [row, col]
             for row in range(GRID_ROWS)
             for col in range(GRID_COLS)
             if (row, col) not in occupied
         ]
+
+    def find_contiguous_slot(self, slots_needed: int = 1):
+        """Find a starting [row, col] for a contiguous run of *slots_needed* columns,
+        keeping at least 1 empty column of buffer between neighbouring items."""
+        occupied = self._get_occupied_slots()
+
+        for row in range(GRID_ROWS):
+            for start_col in range(GRID_COLS - slots_needed + 1):
+                # Check item columns + 1-col buffer on each side (clamped to grid edges)
+                check_start = max(0, start_col - 1)
+                check_end = min(GRID_COLS - 1, start_col + slots_needed)
+                if not any((row, c) in occupied for c in range(check_start, check_end + 1)):
+                    return [row, start_col]
+
+        # Fallback: try without buffer if grid is crowded
+        for row in range(GRID_ROWS):
+            for start_col in range(GRID_COLS - slots_needed + 1):
+                if not any((row, c) in occupied for c in range(start_col, start_col + slots_needed)):
+                    return [row, start_col]
+
+        return None
 
     # ── Supabase implementations ──────────────────────────────────────────────
 
@@ -180,20 +211,24 @@ class InventoryService:
                 "Supabase is required for inventory operations. Set SUPABASE_URL and SUPABASE_KEY."
             )
 
-    def _add_supabase(self, name, user_id, condition=None, review=None, slot_row=None, slot_col=None):
+    def _add_supabase(self, name, user_id, condition=None, review=None, slot_row=None, slot_col=None, slots_needed=None):  # noqa: ARG002 — slot_row/slot_col kept for API compat
         resolved_user_id = self._resolve_user_id(user_id)
+        count = max(1, int(slots_needed)) if slots_needed else 1
         data = {
             "name": name,
             "category": "unknown",
             "status": "available",
+            "slot_count": count,
         }
         if resolved_user_id:
             data["donated_by"] = resolved_user_id
-        if slot_row is not None and slot_col is not None:
-            if not (0 <= slot_row < GRID_ROWS and 0 <= slot_col < GRID_COLS):
-                raise ValueError(f"Slot [{slot_row}, {slot_col}] is outside the {GRID_ROWS}x{GRID_COLS} grid")
-            data["slot_row"] = slot_row
-            data["slot_col"] = slot_col
+
+        # Find a contiguous block with 1-slot buffer between neighbours
+        placement = self.find_contiguous_slot(count)
+        if placement is None:
+            raise ValueError("No available contiguous slot run in the grid")
+        data["slot_row"] = placement[0]
+        data["slot_col"] = placement[1]
 
         result = supabase.table("items").insert(data).execute()
         inserted = result.data[0]
@@ -281,6 +316,7 @@ class InventoryService:
         col = item.pop("slot_col", None)
         if col is None:
             col = item.pop("position_col", None)
+        slot_count = item.pop("slot_count", None) or 1
         if row is not None and col is not None:
             position = [row, col]
         elif synthetic_index is not None and synthetic_index < 30:
@@ -298,4 +334,5 @@ class InventoryService:
             "review": item.get("review"),
             "status": item.get("status", "available"),
             "position": position,
+            "slot_count": slot_count,
         }
