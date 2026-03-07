@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+elevenlabs
+anthropic
+python-dotenv
+pyaudio

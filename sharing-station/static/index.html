@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sharing Station</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem 1rem;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #FF6B35; }
+        .status { margin-bottom: 2rem; font-size: 0.9rem; color: #888; }
+        .status.connected { color: #4CAF50; }
+        .btn {
+            display: block;
+            width: 100%;
+            max-width: 300px;
+            padding: 1rem;
+            margin: 0.5rem 0;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .btn:active { transform: scale(0.97); }
+        .btn-nfc { background: #FF6B35; color: white; }
+        .btn-inventory { background: #16213e; color: #4fc3f7; border: 1px solid #4fc3f7; }
+        .btn-stop { background: #c62828; color: white; }
+        .log {
+            width: 100%;
+            max-width: 400px;
+            margin-top: 2rem;
+            padding: 1rem;
+            background: #16213e;
+            border-radius: 12px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .log p { margin: 0.3rem 0; }
+        .log .agent { color: #4fc3f7; }
+        .log .user { color: #81c784; }
+        .log .system { color: #ffb74d; }
+    </style>
+</head>
+<body>
+    <h1>Sharing Station</h1>
+    <p class="status" id="status">Disconnected</p>
+
+    <button class="btn btn-nfc" onclick="tapNfc('abc123')">Tap NFC (Peter)</button>
+    <button class="btn btn-nfc" onclick="tapNfc('def456')">Tap NFC (Alice)</button>
+    <button class="btn btn-inventory" onclick="getInventory()">View Inventory</button>
+    <button class="btn btn-stop" onclick="stopConversation()">End Session</button>
+
+    <div class="log" id="log"></div>
+
+    <script>
+        const API = window.location.origin;
+        const log = document.getElementById('log');
+        const status = document.getElementById('status');
+
+        function addLog(msg, cls = 'system') {
+            const p = document.createElement('p');
+            p.className = cls;
+            p.textContent = msg;
+            log.appendChild(p);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        async function tapNfc(nfcId) {
+            try {
+                const res = await fetch(`${API}/api/auth/nfc`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nfc_id: nfcId }),
+                });
+                const data = await res.json();
+                if (data.authenticated) {
+                    addLog(`Authenticated: ${data.user_name} (${data.nickname || 'no nickname'})`, 'user');
+                    status.textContent = `Connected: ${data.user_name}`;
+                    status.className = 'status connected';
+
+                    // Start conversation
+                    await fetch(`${API}/conversation/start?user_name=${data.user_name}`, { method: 'POST' });
+                    addLog('Conversation started', 'agent');
+                } else {
+                    addLog(`Auth failed: ${data.error}`, 'system');
+                }
+            } catch (e) {
+                addLog(`Error: ${e.message}`, 'system');
+            }
+        }
+
+        async function getInventory() {
+            try {
+                const res = await fetch(`${API}/api/tools/inventory`);
+                const data = await res.json();
+                addLog(`Inventory (${data.items.length} items):`, 'system');
+                data.items.forEach(item => {
+                    addLog(`  - ${item.name} (by ${item.deposited_by})`, 'system');
+                });
+            } catch (e) {
+                addLog(`Error: ${e.message}`, 'system');
+            }
+        }
+
+        async function stopConversation() {
+            try {
+                await fetch(`${API}/conversation/stop`, { method: 'POST' });
+                addLog('Session ended', 'system');
+                status.textContent = 'Disconnected';
+                status.className = 'status';
+            } catch (e) {
+                addLog(`Error: ${e.message}`, 'system');
+            }
+        }
+
+        // Health check
+        fetch(`${API}/health`)
+            .then(r => r.json())
+            .then(d => addLog(`Server: ${d.status}`, 'system'))
+            .catch(() => addLog('Server not reachable', 'system'));
+    </script>
+</body>
+</html>
