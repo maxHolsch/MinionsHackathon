@@ -10,10 +10,12 @@ Usage:
 from flask import Flask, request, jsonify
 from hardware.pi_servo import PiServo
 from hardware.pi_leds import PiLEDs
+from hardware.pi_distance import PiDistance
 
 app = Flask(__name__)
 servo = PiServo()
 leds = PiLEDs()
+distance = PiDistance()
 
 
 @app.route("/health", methods=["GET"])
@@ -40,9 +42,17 @@ def light_control():
     return jsonify(result)
 
 
+@app.route("/distance", methods=["GET"])
+def distance_check():
+    cm = distance.measure_distance()
+    close = distance.is_close()
+    return jsonify({"distance_cm": cm, "is_close": close})
+
+
 if __name__ == "__main__":
     try:
         app.run(host="0.0.0.0", port=5000)
     finally:
         servo.cleanup()
         leds.cleanup()
+        distance.cleanup()
