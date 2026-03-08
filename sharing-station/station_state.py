@@ -18,6 +18,7 @@ station = {
         "user_name": None,
     },
     "pending_user": None,  # set by poller when a new active user is detected; cleared by browser after it starts the session
+    "distance": {"cm": None, "is_close": None, "asleep": None},
     "events": [],
 }
 

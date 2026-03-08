@@ -204,6 +204,7 @@ class ConversationManager:
         user_name: str = None,
         nickname: str = None,
         memories: list = None,
+        preferences: str = None,
         contributed_items: list = None,
         checked_out_items: list = None,
         is_new_user: bool = False,
@@ -222,6 +223,8 @@ class ConversationManager:
         parts.append(f"New user: {'yes' if is_new_user else 'no'}.")
         if memories:
             parts.append(f"Known memories/preferences: {'; '.join(memories)}.")
+        if preferences:
+            parts.append(f"User preferences: {preferences}.")
         if contributed_items is not None:
             if contributed_items:
                 parts.append(
@@ -254,7 +257,8 @@ class ConversationManager:
                 return
 
     def start(self, user_id: str = None, user_name: str = None,
-              nickname: str = None, memories: list = None, contributed_items: list = None,
+              nickname: str = None, memories: list = None, preferences: str = None,
+              contributed_items: list = None,
               checked_out_items: list = None, is_new_user: bool = False):
         """Start a new conversation session."""
         if self.is_active:
@@ -273,6 +277,8 @@ class ConversationManager:
             joined_memories = "; ".join(memories)
             dynamic_vars["memories"] = joined_memories
             dynamic_vars["memory_summary"] = joined_memories
+        if preferences:
+            dynamic_vars["preferences"] = preferences
         if contributed_items is not None:
             dynamic_vars["user_station_items"] = self._summarize_item_names(contributed_items)
         if checked_out_items is not None:
@@ -311,6 +317,7 @@ class ConversationManager:
                 "user_name": user_name,
                 "nickname": nickname,
                 "memories": memories,
+                "preferences": preferences,
                 "contributed_items": contributed_items,
                 "checked_out_items": checked_out_items,
                 "is_new_user": is_new_user,

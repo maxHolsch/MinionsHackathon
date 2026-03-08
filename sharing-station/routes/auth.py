@@ -39,6 +39,7 @@ async def nfc_authenticate(req: NfcAuthRequest):
     user_name = user.get("name") or "neighbor"
     nickname = user.get("nickname")
     memories = user.get("memories") or []
+    preferences = user.get("preferences")
     try:
         contributed_items = [item.get("name") for item in inventory.list_user_contributions(user_id) if item.get("name")]
         checked_out_items = [item.get("name") for item in inventory.list_user_checked_out(user_id) if item.get("name")]
@@ -70,6 +71,7 @@ async def nfc_authenticate(req: NfcAuthRequest):
                     user_name=user_name,
                     nickname=nickname,
                     memories=memories,
+                    preferences=preferences,
                     contributed_items=contributed_items,
                     checked_out_items=checked_out_items,
                     is_new_user=is_new_user,
@@ -87,6 +89,7 @@ async def nfc_authenticate(req: NfcAuthRequest):
         "user_name": user_name,
         "nickname": nickname,
         "memories": memories,
+        "preferences": preferences,
         "contributed_items": contributed_items,
         "checked_out_items": checked_out_items,
         "is_new_user": is_new_user,

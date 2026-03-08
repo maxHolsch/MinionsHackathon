@@ -58,6 +58,7 @@ async def _poll_active_user():
                         user_name = (user.get("name") if user else None) or user_data.get("name") or "neighbor"
                         nickname = (user.get("nickname") if user else None) or user_data.get("nickname")
                         memories = (user.get("memories") if user else None) or []
+                        preferences = (user.get("preferences") if user else None)
 
                         try:
                             contributed_items = [
@@ -83,15 +84,16 @@ async def _poll_active_user():
                                 "user_name": user_name,
                                 "nickname": nickname,
                                 "memories": memories,
+                                "preferences": preferences,
                                 "contributed_items": contributed_items,
                                 "checked_out_items": checked_out_items,
                                 "is_new_user": False,
                             }
                             log_event("CONV", f"WebRTC session pending for {user_name}")
                         else:
-                            _uid, _uname, _nick, _mem, _contrib, _checkout = (
+                            _uid, _uname, _nick, _mem, _prefs, _contrib, _checkout = (
                                 current_id, user_name, nickname, memories,
-                                contributed_items, checked_out_items,
+                                preferences, contributed_items, checked_out_items,
                             )
 
                             async def _run_conversation():
@@ -102,6 +104,7 @@ async def _poll_active_user():
                                         user_name=_uname,
                                         nickname=_nick,
                                         memories=_mem,
+                                        preferences=_prefs,
                                         contributed_items=_contrib,
                                         checked_out_items=_checkout,
                                         is_new_user=False,
@@ -139,13 +142,18 @@ async def _poll_distance_sensor():
 
     while True:
         try:
-            close = await asyncio.to_thread(distance.is_close)
+            cm = await asyncio.to_thread(distance.measure_distance)
+            close = cm < 30  # same threshold as PiDistance.CLOSE_THRESHOLD_CM
             now = time.monotonic()
+
+            station["distance"]["cm"] = round(cm, 1) if cm != float("inf") else None
+            station["distance"]["is_close"] = close
 
             if close:
                 last_close_time = now
                 if is_asleep is not False:
                     is_asleep = False
+                    station["distance"]["asleep"] = False
                     if _supabase:
                         await asyncio.to_thread(
                             lambda: _supabase.table("station_config")
@@ -158,6 +166,7 @@ async def _poll_distance_sensor():
                 timed_out = last_close_time is None or (now - last_close_time) >= DISTANCE_SLEEP_AFTER_S
                 if timed_out and is_asleep is not True:
                     is_asleep = True
+                    station["distance"]["asleep"] = True
                     if _supabase:
                         await asyncio.to_thread(
                             lambda: _supabase.table("station_config")
@@ -321,6 +330,7 @@ async def start_conversation(user_name: str = "Unknown", user_id: str = None,
     if user and (not user_name or user_name == "Unknown"):
         resolved_user_name = user.get("name") or user_name
     memories = user.get("memories") or [] if user else []
+    preferences = user.get("preferences") if user else None
     nickname = nickname or (user.get("nickname") if user else None)
     contributed_items = []
     checked_out_items = []
@@ -347,6 +357,7 @@ async def start_conversation(user_name: str = "Unknown", user_id: str = None,
             "user_id": user_id,
             "nickname": nickname,
             "memories": memories,
+            "preferences": preferences,
             "contributed_items": contributed_items,
             "checked_out_items": checked_out_items,
             "is_new_user": is_new_user,
@@ -358,6 +369,7 @@ async def start_conversation(user_name: str = "Unknown", user_id: str = None,
         user_id=user_id,
         nickname=nickname,
         memories=memories,
+        preferences=preferences,
         contributed_items=contributed_items,
         checked_out_items=checked_out_items,
         is_new_user=is_new_user,

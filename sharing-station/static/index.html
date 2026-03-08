@@ -60,6 +60,8 @@
     #btn-mic:hover { background: var(--blue); color: #0d1117; }
     #btn-mic.muted { border-color: var(--red); color: var(--red); }
     #btn-mic.muted:hover { background: var(--red); color: white; }
+    #btn-mic.ptt-active { border-color: var(--green); color: var(--green); background: rgba(63,185,80,0.15); }
+    #ptt-hint { font-size: 0.65rem; color: var(--muted); margin-left: 4px; }
 
     /* ── MAIN GRID ── */
     main {
@@ -201,7 +203,8 @@
   <h1>Sharing Station — Dev Dashboard</h1>
   <div id="conv-dot"></div>
   <span id="conv-label">No session</span>
-  <button id="btn-mic" onclick="toggleMicMute()">Mic Live</button>
+  <button id="btn-mic" onclick="toggleMicMute()">Mic Muted</button>
+  <span id="ptt-hint">[hold Space to talk]</span>
   <button id="btn-stop" onclick="stopConversation()">Stop Session</button>
 </header>
 
@@ -316,6 +319,13 @@
         <div id="lock-state">locked</div>
       </div>
 
+      <!-- Distance Sensor -->
+      <div class="status-block">
+        <div class="section-label">Distance Sensor</div>
+        <div id="distance-value" style="font-size:1.8rem;text-align:center;font-weight:bold;margin:4px 0">—</div>
+        <div id="distance-status" style="font-size:0.75rem;text-align:center;color:var(--muted)">waiting…</div>
+      </div>
+
       <!-- LED Grid -->
       <div class="status-block">
         <div class="section-label" style="margin-bottom:8px">LED Grid (3 × 10)</div>
@@ -349,12 +359,13 @@
 <script>
   const API = window.location.origin;
   const logEl = document.getElementById('log');
-  let currentMicMuted = false;
+  let currentMicMuted = true;
   let activeConversation = null;
   let activeUser = null;
   let sdkModulePromise = null;
   let sessionStarting = false;
   let activeSessionCount = 0;
+  let pttActive = false; // push-to-talk spacebar held
 
   async function apiJson(path, options = {}) {
     const res = await fetch(`${API}${path}`, options);
@@ -458,6 +469,9 @@
     parts.push(`New user: ${user.is_new_user ? 'yes' : 'no'}.`);
     if (Array.isArray(user.memories) && user.memories.length > 0) {
       parts.push(`Known memories/preferences: ${user.memories.join('; ')}.`);
+    }
+    if (user.preferences) {
+      parts.push(`User preferences: ${user.preferences}.`);
     }
     const stationItems = summarizeItemNames(user.contributed_items || []);
     const checkedOutItems = summarizeItemNames(user.checked_out_items || []);
@@ -645,6 +659,11 @@
 
     activeConversation = await Conversation.startSession(options);
 
+    // Start with mic muted (push-to-talk mode)
+    activeConversation.setMicMuted(true);
+    currentMicMuted = true;
+    updateMicUI();
+
     const context = buildContextUpdate(user);
     if (context) {
       activeConversation.sendContextualUpdate(context);
@@ -668,17 +687,31 @@
       const modeLabel = d.conversation_mode || 'unknown';
       label.textContent = d.conversation_active ? `Session active (${modeLabel})` : `No session (${modeLabel})`;
 
-      // Mic mute state
-      currentMicMuted = !!d.mic_muted;
-      const micBtn = document.getElementById('btn-mic');
-      micBtn.className = currentMicMuted ? 'muted' : '';
-      micBtn.textContent = currentMicMuted ? 'Mic Muted' : 'Mic Live';
+      // Mic mute state (don't override during push-to-talk)
+      if (!pttActive) {
+        currentMicMuted = !!d.mic_muted;
+        updateMicUI();
+      }
 
       // Lock
       const locked = d.lock === 'locked';
       document.getElementById('lock-icon').textContent = locked ? '🔒' : '🔓';
       document.getElementById('lock-state').textContent = d.lock;
       document.getElementById('lock-state').style.color = locked ? 'var(--amber)' : 'var(--green)';
+
+      // Distance sensor
+      const dist = d.distance || {};
+      const distEl = document.getElementById('distance-value');
+      const distStatus = document.getElementById('distance-status');
+      if (dist.cm != null) {
+        distEl.textContent = dist.cm + ' cm';
+        distEl.style.color = dist.is_close ? 'var(--green)' : 'var(--muted)';
+        const asleepLabel = dist.asleep === true ? ' · asleep' : dist.asleep === false ? ' · awake' : '';
+        distStatus.textContent = (dist.is_close ? 'someone nearby' : 'nobody nearby') + asleepLabel;
+      } else {
+        distEl.textContent = '—';
+        distStatus.textContent = 'no reading';
+      }
 
       // LED grid
       const activeLed = d.led;
@@ -890,31 +923,73 @@
       }
       await fetch(`${API}/conversation/stop`, { method: 'POST' });
       activeConversation = null;
-      currentMicMuted = false;
+      currentMicMuted = true;
+      pttActive = false;
+      updateMicUI();
       addEvent('CONV', 'Session stopped');
     } catch (e) {
       addEvent('ERROR', e.message);
     }
   }
 
-  async function setMicMuted(muted) {
+  function updateMicUI() {
+    const micBtn = document.getElementById('btn-mic');
+    if (pttActive) {
+      micBtn.className = 'ptt-active';
+      micBtn.textContent = '🎙 Speaking';
+    } else if (currentMicMuted) {
+      micBtn.className = 'muted';
+      micBtn.textContent = 'Mic Muted';
+    } else {
+      micBtn.className = '';
+      micBtn.textContent = 'Mic Live';
+    }
+  }
+
+  async function setMicMuted(muted, skipBackend = false) {
     if (!activeConversation) {
-      addEvent('ERROR', 'No active WebRTC session');
+      if (!skipBackend) addEvent('ERROR', 'No active WebRTC session');
       return;
     }
     try {
       activeConversation.setMicMuted(!!muted);
-      const data = await postJson('/conversation/mic', { muted: !!muted });
-      currentMicMuted = Boolean(data.mic_muted);
-      addEvent('CONV', `Mic ${currentMicMuted ? 'muted' : 'unmuted'}`);
+      currentMicMuted = !!muted;
+      updateMicUI();
+      if (!skipBackend) {
+        const data = await postJson('/conversation/mic', { muted: !!muted });
+        currentMicMuted = Boolean(data.mic_muted);
+        addEvent('CONV', `Mic ${currentMicMuted ? 'muted' : 'unmuted'}`);
+      }
     } catch (e) {
-      addEvent('ERROR', e.message);
+      if (!skipBackend) addEvent('ERROR', e.message);
     }
   }
 
   async function toggleMicMute() {
     await setMicMuted(!currentMicMuted);
   }
+
+  // ── Push-to-Talk (spacebar) ──
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || e.repeat) return;
+    // Don't capture if user is typing in an input/textarea
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    e.preventDefault();
+    if (!activeConversation) return;
+    pttActive = true;
+    setMicMuted(false, true);
+  });
+
+  document.addEventListener('keyup', (e) => {
+    if (e.code !== 'Space') return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    e.preventDefault();
+    if (!activeConversation) return;
+    pttActive = false;
+    setMicMuted(true, true);
+  });
 
   // Initial health check
   fetch(`${API}/health`)
