@@ -13,6 +13,7 @@ Controls:
     7  — fill entire strip orange (#fc9403)
     5  — chase: light up each slot one by one across all rows
     6  — highlight a specific slot  (prompts for row and col)
+    d  — set brightness (0–31, current shown in prompt)
     c  — clear (all off)
     q  — quit
 """
@@ -113,6 +114,15 @@ try:
             chase(strip)
         elif cmd == "6":
             highlight_slot(strip)
+        elif cmd == "d":
+            try:
+                val = int(input(f"  Brightness 0-31 (current={strip.global_brightness}): ").strip())
+                val = max(0, min(31, val))
+                strip.global_brightness = val
+                strip.show()
+                print(f"  Brightness set to {val}")
+            except ValueError:
+                print("  Invalid input.")
         elif cmd == "c":
             clear(strip)
             print("Cleared")
