@@ -17,6 +17,7 @@ station = {
         "user_id": None,
         "user_name": None,
     },
+    "pending_user": None,  # set by poller when a new active user is detected; cleared by browser after it starts the session
     "events": [],
 }
 

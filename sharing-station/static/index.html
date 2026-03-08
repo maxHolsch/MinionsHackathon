@@ -727,6 +727,17 @@
         }).join('');
       }
 
+      // Start WebRTC session if server has a pending user (triggered by NFC poller)
+      if (d.pending_user && !activeConversation) {
+        const user = d.pending_user;
+        addEvent('AUTH', `NFC login: ${user.user_name}${user.is_new_user ? ' [NEW USER]' : ''}`);
+        try {
+          await startWebRtcConversation(user);
+        } catch (e) {
+          addEvent('ERROR', `Auto-start failed: ${e.message}`);
+        }
+      }
+
       // Merge server events into log (avoid duplicates)
       (d.events || []).forEach(ev => {
         const key = `${ev.t}|${ev.category}|${ev.message}`;

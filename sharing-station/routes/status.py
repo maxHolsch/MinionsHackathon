@@ -46,4 +46,5 @@ async def get_status():
         "inventory": inventory_items,
         "checked_out": checked_out_items,
         "inventory_error": inventory_error,
+        "pending_user": station.get("pending_user"),
     }
