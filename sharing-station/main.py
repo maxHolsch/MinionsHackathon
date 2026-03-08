@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import asyncio
 import json
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -20,7 +21,7 @@ from routes.auth import router as auth_router
 from routes.status import router as status_router
 from services.inventory import InventoryService
 from services.users import UserService
-from services.hardware import servo
+from services.hardware import servo, distance
 from station_state import log_event, set_conversation_state, station
 
 USE_WEBRTC = VOICE_RUNTIME == "webrtc"
@@ -129,6 +130,51 @@ async def _poll_active_user():
         await asyncio.sleep(5)
 
 
+DISTANCE_SLEEP_AFTER_S = 30
+
+
+async def _poll_distance_sensor():
+    last_close_time = None
+    is_asleep = None  # None = unknown, forces a write on first real state change
+
+    while True:
+        try:
+            close = await asyncio.to_thread(distance.is_close)
+            now = time.monotonic()
+
+            if close:
+                last_close_time = now
+                if is_asleep is not False:
+                    is_asleep = False
+                    if _supabase:
+                        await asyncio.to_thread(
+                            lambda: _supabase.table("station_config")
+                                .update({"station_asleep": False})
+                                .eq("id", 1)
+                                .execute()
+                        )
+                    log_event("INFO", "Distance: someone nearby — station waking up")
+            else:
+                timed_out = last_close_time is None or (now - last_close_time) >= DISTANCE_SLEEP_AFTER_S
+                if timed_out and is_asleep is not True:
+                    is_asleep = True
+                    if _supabase:
+                        await asyncio.to_thread(
+                            lambda: _supabase.table("station_config")
+                                .update({"station_asleep": True})
+                                .eq("id", 1)
+                                .execute()
+                        )
+                    log_event("INFO", "Distance: nobody nearby for 30s — station sleeping")
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[DISTANCE] Error: {e}")
+
+        await asyncio.sleep(0.5)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -140,9 +186,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"[SERVER] Failed to deactivate users on startup: {e}")
     poll_task = asyncio.create_task(_poll_active_user())
+    distance_task = asyncio.create_task(_poll_distance_sensor())
     yield
     # Shutdown
     poll_task.cancel()
+    distance_task.cancel()
+    distance.cleanup()
     print("[SERVER] Shutting down...")
     if not USE_WEBRTC:
         conversation_manager.stop()
