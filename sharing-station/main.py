@@ -320,6 +320,13 @@ async def start_conversation(user_name: str = "Unknown", user_id: str = None,
 @app.post("/conversation/stop")
 async def stop_conversation():
     """Stop the current conversation session."""
+    if _supabase:
+        try:
+            await asyncio.to_thread(_supabase.functions.invoke, "deactivate-user")
+        except Exception as e:
+            print(f"[SERVER] Failed to deactivate user on stop: {e}")
+    station["pending_user"] = None
+
     if USE_WEBRTC:
         set_conversation_state(active=False, mic_muted=False, mode="webrtc")
         return {"status": "stopped", "voice_runtime": "webrtc"}
