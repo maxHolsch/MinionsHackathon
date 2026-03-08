@@ -148,6 +148,13 @@ class UserService:
             # Some DB snapshots may not include `is_active`; ignore in that case.
             pass
 
+    def deactivate_all(self):
+        """Set all users to inactive."""
+        try:
+            supabase.table("users").update({"is_active": False}).eq("is_active", True).execute()
+        except Exception:
+            pass
+
     def _set_user_name(self, user_id: str, name: str):
         try:
             supabase.table("users").update({"name": name}).eq("id", user_id).execute()

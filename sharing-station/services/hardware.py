@@ -1,12 +1,25 @@
 import os
 
 
+PI_IP = os.getenv("PI_IP")
+
+
 def is_raspberry_pi():
     """Detect if running on Pi."""
     return os.path.exists("/sys/firmware/devicetree/base/model")
 
 
-if is_raspberry_pi():
+if PI_IP:
+    # Remote mode: servo/LEDs on Pi over HTTP, camera local on laptop
+    from hardware.remote_servo import RemoteServo as PiServo
+    from hardware.remote_leds import RemoteLEDs as PiLEDs
+    try:
+        import cv2  # noqa: F401
+        from hardware.usb_camera import USBCamera as PiCamera
+    except ImportError:
+        from hardware.mock_camera import MockCamera as PiCamera
+    print(f"[HARDWARE] Remote mode — Pi at {PI_IP}, camera local")
+elif is_raspberry_pi():
     from hardware.pi_camera import PiCamera
     from hardware.pi_leds import PiLEDs
     from hardware.pi_servo import PiServo

@@ -105,6 +105,16 @@ class ConversationManager:
         )
         return json.dumps({"success": True, "user": user})
 
+    def _tool_end_conversation(self, params: dict):
+        print("[SESSION] Agent requested end of conversation")
+        threading.Thread(target=self._end_after_delay, daemon=True).start()
+        return json.dumps({"success": True})
+
+    def _end_after_delay(self, delay: float = 6.0):
+        """Give the agent time to finish its farewell, then end the session."""
+        time.sleep(delay)
+        self.stop()
+
     def _tool_control_lights(self, params: dict):
         mode = params.get("mode") or "idle"
         position = params.get("position")
@@ -154,6 +164,11 @@ class ConversationManager:
             client_tools,
             ["control_lights", "functions.control_lights", "lights", "functions.lights"],
             self._tool_control_lights,
+        )
+        self._register_tool_aliases(
+            client_tools,
+            ["end_conversation", "functions.end_conversation", "end-conversation", "functions.end-conversation", "endConversation", "functions.endConversation"],
+            self._tool_end_conversation,
         )
         return client_tools
 

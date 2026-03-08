@@ -13,3 +13,5 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 VOICE_RUNTIME = (os.getenv("VOICE_RUNTIME") or "webrtc").strip().lower()
 if VOICE_RUNTIME not in {"webrtc", "python"}:
     VOICE_RUNTIME = "webrtc"
+
+PI_IP = os.getenv("PI_IP")

@@ -542,6 +542,21 @@
       }
     );
 
+    register(
+      ['end_conversation', 'functions.end_conversation', 'end-conversation', 'functions.end-conversation', 'endConversation', 'functions.endConversation'],
+      async () => {
+        addEvent('CONV', 'Agent tool: end_conversation — ending session in 6s');
+        setTimeout(async () => {
+          if (activeConversation) {
+            try { await activeConversation.endSession(); } catch (_) {}
+            activeConversation = null;
+          }
+          try { await postJson('/conversation/stop', {}); } catch (_) {}
+        }, 6000);
+        return { success: true };
+      }
+    );
+
     return tools;
   }
 

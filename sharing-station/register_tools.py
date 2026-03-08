@@ -169,6 +169,18 @@ TOOL_CONFIGS = [
             "required": ["mode"],
         },
     },
+    {
+        "type": "client",
+        "name": "end_conversation",
+        "description": (
+            "End the current conversation and lock the station. "
+            "Call this when the user says goodbye, is done, or wants to leave. "
+            "Say a brief farewell BEFORE calling this tool."
+        ),
+        "response_timeout_secs": 5,
+        "expects_response": False,
+        "parameters": {"type": "object", "properties": {}},
+    },
 ]
 
 
