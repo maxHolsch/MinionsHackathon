@@ -10,9 +10,10 @@ def is_raspberry_pi():
 
 
 if PI_IP:
-    # Remote mode: servo/LEDs on Pi over HTTP, camera local on laptop
+    # Remote mode: servo/LEDs on Pi over HTTP, camera + distance mock local
     from hardware.remote_servo import RemoteServo as PiServo
     from hardware.remote_leds import RemoteLEDs as PiLEDs
+    from hardware.mock_distance import MockDistance as PiDistance
     try:
         import cv2  # noqa: F401
         from hardware.usb_camera import USBCamera as PiCamera

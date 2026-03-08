@@ -3,7 +3,8 @@ import urllib.request
 import json
 
 
-PI_URL = f"http://{os.getenv('PI_IP', 'localhost')}:5000"
+_pi_ip = os.getenv("PI_IP", "localhost")
+PI_URL = f"http://{_pi_ip}" if ":" in _pi_ip else f"http://{_pi_ip}:5000"
 
 
 class RemoteLEDs:
