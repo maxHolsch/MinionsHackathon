@@ -353,6 +353,7 @@
   let activeConversation = null;
   let activeUser = null;
   let sdkModulePromise = null;
+  let sessionStarting = false;
 
   async function apiJson(path, options = {}) {
     const res = await fetch(`${API}${path}`, options);
@@ -728,13 +729,16 @@
       }
 
       // Start WebRTC session if server has a pending user (triggered by NFC poller)
-      if (d.pending_user && !activeConversation) {
+      if (d.pending_user && !activeConversation && !sessionStarting) {
+        sessionStarting = true;
         const user = d.pending_user;
         addEvent('AUTH', `NFC login: ${user.user_name}${user.is_new_user ? ' [NEW USER]' : ''}`);
         try {
           await startWebRtcConversation(user);
         } catch (e) {
           addEvent('ERROR', `Auto-start failed: ${e.message}`);
+        } finally {
+          sessionStarting = false;
         }
       }
 
@@ -765,8 +769,13 @@
       if (data.authenticated) {
         const who = data.nickname ? `${data.user_name} aka "${data.nickname}"` : data.user_name;
         addEvent('AUTH', `Authenticated → ${who}${data.is_new_user ? ' [NEW USER]' : ''}`);
-        if ((data.conversation_mode || 'webrtc') === 'webrtc') {
-          await startWebRtcConversation(data);
+        if ((data.conversation_mode || 'webrtc') === 'webrtc' && !sessionStarting) {
+          sessionStarting = true;
+          try {
+            await startWebRtcConversation(data);
+          } finally {
+            sessionStarting = false;
+          }
         } else {
           addEvent('CONV', 'Server-side conversation started');
         }
