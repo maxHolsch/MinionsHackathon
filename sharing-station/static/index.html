@@ -623,6 +623,10 @@
         const mode = typeof modeEvent === 'string' ? modeEvent : (modeEvent && modeEvent.mode) || 'unknown';
         addEvent('CONV', `Mode: ${mode}`);
       },
+      onMessage: (msg) => {
+        const source = msg.source === 'user' ? 'You' : 'Agent';
+        addEvent('CONV', `${source}: ${msg.message}`);
+      },
       onInterruption: () => {
         addEvent('CONV', 'Interruption detected');
       },
