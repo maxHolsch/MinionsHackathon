@@ -10,6 +10,7 @@ Controls:
     2  — fill entire strip green
     3  — fill entire strip blue
     4  — fill entire strip amber (default slot colour)
+    7  — fill entire strip orange (#fc9403)
     5  — chase: light up each slot one by one across all rows
     6  — highlight a specific slot  (prompts for row and col)
     c  — clear (all off)
@@ -30,6 +31,7 @@ COLS_PER_ROW  = 10
 LEDS_PER_SLOT = LEDS_PER_ROW // COLS_PER_ROW  # 3
 
 AMBER  = (245, 166,  35)
+ORANGE = (252, 148,   3)  # #fc9403
 RED    = (255,   0,   0)
 GREEN  = (  0, 255,  80)
 BLUE   = (  0,  80, 255)
@@ -104,6 +106,9 @@ try:
         elif cmd == "4":
             fill(strip, *AMBER)
             print("Amber")
+        elif cmd == "7":
+            fill(strip, *ORANGE)
+            print("Orange")
         elif cmd == "5":
             chase(strip)
         elif cmd == "6":
