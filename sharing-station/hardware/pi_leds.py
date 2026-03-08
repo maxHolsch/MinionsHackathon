@@ -12,10 +12,27 @@ SUCCESS_COLOR = (0, 255, 80)
 ERROR_COLOR   = (255, 0, 0)
 
 
+NAMED_COLORS = {
+    "red": (255, 0, 0),
+    "green": (0, 255, 80),
+    "blue": (0, 80, 255),
+    "white": (255, 200, 100),
+    "yellow": (255, 255, 0),
+    "amber": (245, 166, 35),
+    "orange": (252, 148, 3),
+    "purple": (128, 0, 255),
+    "cyan": (0, 255, 255),
+    "pink": (255, 105, 180),
+}
+
+
 def _parse_color(hex_color: str | None) -> tuple:
-    """Parse a hex color string like '#f5a623' into an (r, g, b) tuple."""
+    """Parse a hex color string like '#f5a623' or a named color into an (r, g, b) tuple."""
     if not hex_color:
         return DEFAULT_COLOR
+    named = NAMED_COLORS.get(hex_color.strip().lower())
+    if named:
+        return named
     hex_color = hex_color.lstrip("#")
     if len(hex_color) != 6:
         return DEFAULT_COLOR
@@ -55,7 +72,7 @@ class PiLEDs:
         if mode == "idle":
             self._clear()
 
-        elif mode == "highlight_item" and position:
+        elif mode in ("highlight_item", "highlight") and position:
             self._clear()
             for i in _slot_indices(position[0], position[1], count):
                 self._strip.set_pixel(i, *rgb)
