@@ -1,58 +1,80 @@
-import RPi.GPIO as GPIO
+from apa102_pi.driver.apa102 import APA102
 
-
-# GPIO pins for 3 LED strip rows (30 LEDs each, 90 total)
-LED_PINS = [9, 10]  # extend with a third pin for row 3 when wired
-
-TOTAL_LEDS = 90
+# Hardware SPI: GPIO 10 = MOSI (data), GPIO 11 = SCLK (clock)
+NUM_LEDS = 90
 LEDS_PER_ROW = 30
+COLS_PER_ROW = 10
+LEDS_PER_SLOT = LEDS_PER_ROW // COLS_PER_ROW  # 3 LEDs per grid slot
+
+DEFAULT_COLOR = (245, 166, 35)   # amber
+WELCOME_COLOR = (255, 200, 100)  # warm white
+SUCCESS_COLOR = (0, 255, 80)
+ERROR_COLOR   = (255, 0, 0)
+
+
+def _parse_color(hex_color: str | None) -> tuple:
+    """Parse a hex color string like '#f5a623' into an (r, g, b) tuple."""
+    if not hex_color:
+        return DEFAULT_COLOR
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) != 6:
+        return DEFAULT_COLOR
+    try:
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return DEFAULT_COLOR
+
+
+def _slot_indices(row: int, col: int, count: int = 1) -> range:
+    """Return the LED indices for a slot (or span of slots)."""
+    start = row * LEDS_PER_ROW + col * LEDS_PER_SLOT
+    end   = row * LEDS_PER_ROW + (col + count) * LEDS_PER_SLOT
+    return range(start, min(end, (row + 1) * LEDS_PER_ROW))
 
 
 class PiLEDs:
-    """Real GPIO LED controller for the 3-row sharing station grid."""
+    """SK9822/APA102 LED controller over hardware SPI (GPIO 10 / 11)."""
 
     def __init__(self):
-        GPIO.setmode(GPIO.BCM)
-        for pin in LED_PINS:
-            GPIO.setup(pin, GPIO.OUT)
-            GPIO.output(pin, GPIO.LOW)
-        self._lit_rows = {pin: False for pin in LED_PINS}
-        print("[PI LEDS] GPIO LED controller initialized")
+        self._strip = APA102(num_led=NUM_LEDS, global_brightness=31, order="rgb")
+        self._clear()
+        print("[PI LEDS] SK9822 strip initialised (GPIO 10/11, 90 LEDs)")
 
-    def _all_off(self):
-        """Turn off all LED rows."""
-        for pin in LED_PINS:
-            GPIO.output(pin, GPIO.LOW)
-            self._lit_rows[pin] = False
+    def _clear(self):
+        self._strip.clear_strip()
 
-    def _set_row(self, row: int, on: bool):
-        """Turn a single row on or off (0-indexed)."""
-        if row < len(LED_PINS):
-            GPIO.output(LED_PINS[row], GPIO.HIGH if on else GPIO.LOW)
-            self._lit_rows[LED_PINS[row]] = on
+    def _fill(self, r: int, g: int, b: int):
+        for i in range(NUM_LEDS):
+            self._strip.set_pixel(i, r, g, b)
+        self._strip.show()
 
     def set_mode(self, mode: str, position: list = None, color: str = None, slot_count: int = None):
-        """Control LEDs based on mode and optional position.
-
-        Modes:
-            idle      — all LEDs off (default resting state)
-            highlight — light up the row at position[0]
-            success   — flash all rows on
-            error     — flash all rows on
-        """
         count = slot_count or 1
+        rgb   = _parse_color(color)
 
         if mode == "idle":
-            self._all_off()
-        elif mode == "highlight" and position:
-            self._all_off()
-            row = position[0]
-            self._set_row(row, True)
-        elif mode in ("success", "error"):
-            for pin in LED_PINS:
-                GPIO.output(pin, GPIO.HIGH)
+            self._clear()
+
+        elif mode == "highlight_item" and position:
+            self._clear()
+            for i in _slot_indices(position[0], position[1], count):
+                self._strip.set_pixel(i, *rgb)
+            self._strip.show()
+
+        elif mode == "welcome":
+            self._fill(*WELCOME_COLOR)
+
+        elif mode == "goodbye":
+            self._clear()
+
+        elif mode == "success":
+            self._fill(*SUCCESS_COLOR)
+
+        elif mode == "error":
+            self._fill(*ERROR_COLOR)
+
         else:
-            self._all_off()
+            self._clear()
 
         if position:
             cols = f"{position[1]}-{position[1] + count - 1}" if count > 1 else str(position[1])
@@ -63,7 +85,6 @@ class PiLEDs:
         return {"success": True, "mode": mode}
 
     def cleanup(self):
-        """Release GPIO resources."""
-        self._all_off()
-        GPIO.cleanup(LED_PINS)
-        print("[PI LEDS] GPIO cleaned up")
+        self._clear()
+        self._strip.cleanup()
+        print("[PI LEDS] cleanup done")
