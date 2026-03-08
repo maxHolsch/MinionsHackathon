@@ -143,7 +143,11 @@ supabase functions deploy get-active-user --workdir database
 
 The FastAPI application that ties everything together.
 
-- **Lifespan handler**: Prints startup/shutdown messages and ensures the conversation is cleaned up on exit.
+- **Lifespan handler**: Prints startup/shutdown messages, starts the active-user poller task on boot, cancels it on shutdown, and ensures the conversation is cleaned up on exit.
+- **Active-user poller** (`_poll_active_user`): Background `asyncio` task that calls the Supabase `get-active-user` edge function once per second. On a user transition it:
+  - **New user**: fetches full profile (memories, inventory history), unlocks the door, and writes the user context to `station["pending_user"]` (WebRTC) or starts the conversation manager directly (Python mode).
+  - **User cleared**: clears `pending_user`, stops the conversation, and locks the door.
+  - Uses `asyncio.to_thread` to keep all blocking Supabase/service calls off the event loop.
 - **Router mounting**: Includes the tool endpoints at `/api/tools/` and auth at `/api/auth/`.
 - **Conversation endpoints**: `POST /conversation/token`, `POST /conversation/state`, `POST /conversation/mic`, `POST /conversation/stop`.
 - **Static files**: Mounted last at `/` so it serves `static/index.html` for the phone UI without intercepting API routes.
@@ -397,11 +401,14 @@ station = {
     "lock": "locked",
     "led": {"mode": "idle", "position": None, "color": None},
     "camera": None,
+    "pending_user": None,  # set by poller on NFC tap; cleared after browser starts WebRTC session
     "events": [],   # last 100 events, newest first
 }
 ```
 
 `log_event(category, message, data=None)` appends timestamped events (kept at most 100). On a real Pi the hardware classes bypass this dict entirely.
+
+`pending_user` is the mechanism by which the server-side NFC poller signals the browser to start a WebRTC session. The poller writes the full user context here; the browser reads it via `/api/status` and calls `startWebRtcConversation` within one second.
 
 ---
 
@@ -417,9 +424,12 @@ station = {
   "camera": null,
   "events": [...],
   "inventory": [...],
-  "inventory_error": null
+  "inventory_error": null,
+  "pending_user": null
 }
 ```
+
+`pending_user` is non-null when the server-side NFC poller has detected a new active user but the browser hasn't started the WebRTC session yet. The browser reacts to this field in its `poll()` loop and auto-starts the conversation.
 
 Imports the `inventory` singleton directly from `routes/tools`.
 
