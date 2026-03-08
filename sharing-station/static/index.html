@@ -686,13 +686,23 @@
       (d.inventory || []).forEach(item => {
         const pos = item.position;
         if (Array.isArray(pos) && pos.length === 2) {
-          occupiedSlots.add(pos[0] * 10 + pos[1]);
+          const count = item.slot_count || 1;
+          for (let c = 0; c < count; c++) {
+            occupiedSlots.add(pos[0] * 10 + pos[1] + c);
+          }
         }
       });
+      // Build set of active LED indices (accounting for slot_count)
+      const activeSlots = new Set();
+      if (activeLed && activeLed.mode !== 'idle' && Array.isArray(activeLed.position)) {
+        const aCount = activeLed.slot_count || 1;
+        const aStart = activeLed.position[0] * 10 + activeLed.position[1];
+        for (let c = 0; c < aCount; c++) {
+          activeSlots.add(aStart + c);
+        }
+      }
       dots.forEach((dot, i) => {
-        const isActive = activeLed && activeLed.mode !== 'idle' &&
-          Array.isArray(activeLed.position) &&
-          activeLed.position[0] * 10 + activeLed.position[1] === i;
+        const isActive = activeSlots.has(i);
         dot.className = 'led-dot' + (isActive ? ' active' : (occupiedSlots.has(i) ? ' has-item' : ''));
       });
       const ledMode = activeLed ? activeLed.mode : 'idle';
