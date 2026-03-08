@@ -353,6 +353,8 @@
   let activeConversation = null;
   let activeUser = null;
   let sdkModulePromise = null;
+  let sessionStarting = false;
+  let activeSessionCount = 0;
 
   async function apiJson(path, options = {}) {
     const res = await fetch(`${API}${path}`, options);
@@ -580,7 +582,11 @@
       userId: user.user_id || undefined,
       clientTools: buildClientTools(),
       onConnect: async () => {
-        addEvent('CONV', 'WebRTC connected');
+        activeSessionCount++;
+        addEvent('CONV', `WebRTC connected (sessions: ${activeSessionCount})`);
+        if (activeSessionCount > 1) {
+          addEvent('ERROR', `Multiple sessions detected (${activeSessionCount}) — this should not happen`);
+        }
         currentMicMuted = false;
         await syncConversationState({
           active: true,
@@ -590,7 +596,8 @@
         });
       },
       onDisconnect: async () => {
-        addEvent('CONV', 'WebRTC disconnected');
+        activeSessionCount = Math.max(0, activeSessionCount - 1);
+        addEvent('CONV', `WebRTC disconnected (sessions: ${activeSessionCount})`);
         activeConversation = null;
         currentMicMuted = false;
         await syncConversationState({ active: false, mic_muted: false });
@@ -598,6 +605,10 @@
       onModeChange: (modeEvent) => {
         const mode = typeof modeEvent === 'string' ? modeEvent : (modeEvent && modeEvent.mode) || 'unknown';
         addEvent('CONV', `Mode: ${mode}`);
+      },
+      onMessage: (msg) => {
+        const source = msg.source === 'user' ? 'You' : 'Agent';
+        addEvent('CONV', `${source}: ${msg.message}`);
       },
       onInterruption: () => {
         addEvent('CONV', 'Interruption detected');
@@ -710,6 +721,20 @@
         }).join('');
       }
 
+      // Start WebRTC session if server has a pending user (triggered by NFC poller)
+      if (d.pending_user && !activeConversation && !sessionStarting) {
+        sessionStarting = true;
+        const user = d.pending_user;
+        addEvent('AUTH', `NFC login: ${user.user_name}${user.is_new_user ? ' [NEW USER]' : ''}`);
+        try {
+          await startWebRtcConversation(user);
+        } catch (e) {
+          addEvent('ERROR', `Auto-start failed: ${e.message}`);
+        } finally {
+          sessionStarting = false;
+        }
+      }
+
       // Merge server events into log (avoid duplicates)
       (d.events || []).forEach(ev => {
         const key = `${ev.t}|${ev.category}|${ev.message}`;
@@ -737,8 +762,13 @@
       if (data.authenticated) {
         const who = data.nickname ? `${data.user_name} aka "${data.nickname}"` : data.user_name;
         addEvent('AUTH', `Authenticated → ${who}${data.is_new_user ? ' [NEW USER]' : ''}`);
-        if ((data.conversation_mode || 'webrtc') === 'webrtc') {
-          await startWebRtcConversation(data);
+        if ((data.conversation_mode || 'webrtc') === 'webrtc' && !sessionStarting) {
+          sessionStarting = true;
+          try {
+            await startWebRtcConversation(data);
+          } finally {
+            sessionStarting = false;
+          }
         } else {
           addEvent('CONV', 'Server-side conversation started');
         }

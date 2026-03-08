@@ -51,13 +51,103 @@ A voice-powered community sharing station where neighbors lend and borrow books,
 
 ---
 
+## Database (Supabase)
+
+Project ref: `ihfcwilblsrwvxrvbbir`
+
+### Schema
+
+#### `users`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `nfc_uuid` | text | Unique — used to identify user on NFC tap |
+| `name` | text | Display name |
+| `nickname` | text | AI-generated affectionate nickname |
+| `is_active` | boolean | `true` while user is in an active session |
+| `created_at` | timestamptz | |
+
+#### `items`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `name` | text | Item name (e.g. "Catan", "Dune") |
+| `category` | text | e.g. `book`, `board_game` |
+| `status` | text | `available` or `borrowed` |
+| `donated_by` | uuid | FK → `users.id` (nullable) |
+| `created_at` | timestamptz | |
+
+#### `transactions`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `user_id` | uuid | FK → `users.id` |
+| `item_id` | uuid | FK → `items.id` |
+| `action` | text | `check_in` or `check_out` |
+| `created_at` | timestamptz | |
+
+#### `memories`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | Primary key |
+| `user_id` | uuid | FK → `users.id` |
+| `content` | text | Free-form AI memory (e.g. "Peter liked Dune, especially the world-building") |
+| `created_at` | timestamptz | |
+
+---
+
+### Edge Functions
+
+#### `POST /functions/v1/activate-user`
+
+Called on NFC tap. Deactivates any currently active user, then sets the tapped user as active.
+
+**Request body:**
+```json
+{ "nfc_uuid": "abc-123" }
+```
+
+**Response:** The full user row, or `404` if the UUID isn't registered.
+
+---
+
+#### `GET /functions/v1/get-active-user`
+
+Returns the currently active user, or `{ user: null }` if nobody is active.
+
+**Response:**
+```json
+{
+  "id": "...",
+  "nfc_uuid": "abc-123",
+  "name": "Peter",
+  "nickname": "Tiger",
+  "is_active": true,
+  "created_at": "..."
+}
+```
+
+---
+
+### Deploy edge functions
+```bash
+supabase functions deploy activate-user --workdir database
+supabase functions deploy get-active-user --workdir database
+```
+
+---
+
 ## File-by-File Breakdown
 
 ### `main.py` — Application Entry Point
 
 The FastAPI application that ties everything together.
 
-- **Lifespan handler**: Prints startup/shutdown messages and ensures the conversation is cleaned up on exit.
+- **Lifespan handler**: Prints startup/shutdown messages, starts the active-user poller task on boot, cancels it on shutdown, and ensures the conversation is cleaned up on exit.
+- **Active-user poller** (`_poll_active_user`): Background `asyncio` task that calls the Supabase `get-active-user` edge function once per second. On a user transition it:
+  - **New user**: fetches full profile (memories, inventory history), unlocks the door, and writes the user context to `station["pending_user"]` (WebRTC) or starts the conversation manager directly (Python mode).
+  - **User cleared**: clears `pending_user`, stops the conversation, and locks the door.
+  - Uses `asyncio.to_thread` to keep all blocking Supabase/service calls off the event loop.
 - **Router mounting**: Includes the tool endpoints at `/api/tools/` and auth at `/api/auth/`.
 - **Conversation endpoints**: `POST /conversation/token`, `POST /conversation/state`, `POST /conversation/mic`, `POST /conversation/stop`.
 - **Static files**: Mounted last at `/` so it serves `static/index.html` for the phone UI without intercepting API routes.
@@ -311,11 +401,14 @@ station = {
     "lock": "locked",
     "led": {"mode": "idle", "position": None, "color": None},
     "camera": None,
+    "pending_user": None,  # set by poller on NFC tap; cleared after browser starts WebRTC session
     "events": [],   # last 100 events, newest first
 }
 ```
 
 `log_event(category, message, data=None)` appends timestamped events (kept at most 100). On a real Pi the hardware classes bypass this dict entirely.
+
+`pending_user` is the mechanism by which the server-side NFC poller signals the browser to start a WebRTC session. The poller writes the full user context here; the browser reads it via `/api/status` and calls `startWebRtcConversation` within one second.
 
 ---
 
@@ -331,9 +424,12 @@ station = {
   "camera": null,
   "events": [...],
   "inventory": [...],
-  "inventory_error": null
+  "inventory_error": null,
+  "pending_user": null
 }
 ```
+
+`pending_user` is non-null when the server-side NFC poller has detected a new active user but the browser hasn't started the WebRTC session yet. The browser reacts to this field in its `poll()` loop and auto-starts the conversation.
 
 Imports the `inventory` singleton directly from `routes/tools`.
 
@@ -623,7 +719,9 @@ Keep conversations SHORT — 3-4 exchanges max unless the user wants to chat.
 
 The active runtime client now lives in `database/client.py`, and services read collaborator tables under `database/`.
 
-Recommended workflow:
+The schema is already deployed — see the **Database** section above.
+
+Recommended workflow for future schema changes:
 1. Keep schema changes in `database/supabase/migrations/*.sql`
 2. Regenerate/check `database/schema.sql` when migrations change
 3. Set `SUPABASE_URL` + `SUPABASE_KEY` in `.env` and validate flows:

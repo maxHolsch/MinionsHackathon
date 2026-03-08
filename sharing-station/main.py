@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 import json
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -13,24 +14,135 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from config import ELEVENLABS_AGENT_ID, ELEVENLABS_API_KEY, VOICE_RUNTIME
+from database.client import supabase as _supabase
 from routes.tools import router as tools_router
 from routes.auth import router as auth_router
 from routes.status import router as status_router
 from services.inventory import InventoryService
-from station_state import set_conversation_state, station
+from services.users import UserService
+from services.hardware import servo
+from station_state import log_event, set_conversation_state, station
 
 USE_WEBRTC = VOICE_RUNTIME == "webrtc"
 
 if not USE_WEBRTC:
     from conversation import manager as conversation_manager
 
+_users = UserService()
+_inventory = InventoryService()
+
+
+async def _poll_active_user():
+    last_user_id = None
+    while True:
+        try:
+            if _supabase:
+                res = await asyncio.to_thread(_supabase.functions.invoke, "get-active-user")
+                if isinstance(res, (bytes, str)):
+                    user_data = json.loads(res) if res else None
+                else:
+                    user_data = res.data if res else None
+                current_id = user_data.get("id") if isinstance(user_data, dict) else None
+
+                if current_id != last_user_id:
+                    last_user_id = current_id
+
+                    if current_id:
+                        # New active user detected — mirror NFC auth flow
+                        try:
+                            user = await asyncio.to_thread(_users.get, current_id)
+                        except Exception:
+                            user = None
+
+                        user_name = (user.get("name") if user else None) or user_data.get("name") or "neighbor"
+                        nickname = (user.get("nickname") if user else None) or user_data.get("nickname")
+                        memories = (user.get("memories") if user else None) or []
+
+                        try:
+                            contributed_items = [
+                                item.get("name")
+                                for item in await asyncio.to_thread(_inventory.list_user_contributions, current_id)
+                                if item.get("name")
+                            ]
+                            checked_out_items = [
+                                item.get("name")
+                                for item in await asyncio.to_thread(_inventory.list_user_checked_out, current_id)
+                                if item.get("name")
+                            ]
+                        except Exception:
+                            contributed_items = []
+                            checked_out_items = []
+
+                        await asyncio.to_thread(servo.set_lock, "unlock")
+                        log_event("AUTH", f"Active user detected: {user_name} → door unlocked")
+
+                        if USE_WEBRTC:
+                            station["pending_user"] = {
+                                "user_id": current_id,
+                                "user_name": user_name,
+                                "nickname": nickname,
+                                "memories": memories,
+                                "contributed_items": contributed_items,
+                                "checked_out_items": checked_out_items,
+                                "is_new_user": False,
+                            }
+                            log_event("CONV", f"WebRTC session pending for {user_name}")
+                        else:
+                            _uid, _uname, _nick, _mem, _contrib, _checkout = (
+                                current_id, user_name, nickname, memories,
+                                contributed_items, checked_out_items,
+                            )
+
+                            async def _run_conversation():
+                                try:
+                                    await asyncio.to_thread(
+                                        conversation_manager.start,
+                                        user_id=_uid,
+                                        user_name=_uname,
+                                        nickname=_nick,
+                                        memories=_mem,
+                                        contributed_items=_contrib,
+                                        checked_out_items=_checkout,
+                                        is_new_user=False,
+                                    )
+                                except Exception as e:
+                                    conversation_manager.is_active = False
+                                    log_event("ERROR", f"Conversation failed: {e}")
+
+                            asyncio.create_task(_run_conversation())
+
+                    else:
+                        # Active user cleared — stop conversation and lock door
+                        log_event("AUTH", "Active user cleared → stopping conversation")
+                        station["pending_user"] = None
+                        if USE_WEBRTC:
+                            set_conversation_state(active=False, mic_muted=False, mode="webrtc")
+                        else:
+                            await asyncio.to_thread(conversation_manager.stop)
+                        await asyncio.to_thread(servo.set_lock, "lock")
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[POLL] get-active-user error: {e}")
+
+        await asyncio.sleep(5)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     print("[SERVER] Sharing Station server starting...")
+    if _supabase:
+        try:
+            await asyncio.to_thread(_supabase.functions.invoke, "deactivate-user")
+            print("[SERVER] Cleared any active users from previous session")
+        except Exception as e:
+            print(f"[SERVER] Failed to deactivate users on startup: {e}")
+    poll_task = asyncio.create_task(_poll_active_user())
     yield
     # Shutdown
+    poll_task.cancel()
     print("[SERVER] Shutting down...")
     if not USE_WEBRTC:
         conversation_manager.stop()
@@ -208,6 +320,13 @@ async def start_conversation(user_name: str = "Unknown", user_id: str = None,
 @app.post("/conversation/stop")
 async def stop_conversation():
     """Stop the current conversation session."""
+    if _supabase:
+        try:
+            await asyncio.to_thread(_supabase.functions.invoke, "deactivate-user")
+        except Exception as e:
+            print(f"[SERVER] Failed to deactivate user on stop: {e}")
+    station["pending_user"] = None
+
     if USE_WEBRTC:
         set_conversation_state(active=False, mic_muted=False, mode="webrtc")
         return {"status": "stopped", "voice_runtime": "webrtc"}
