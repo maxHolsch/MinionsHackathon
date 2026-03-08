@@ -16,7 +16,7 @@ BASE = "https://api.elevenlabs.io/v1/convai"
 HEADERS = {"xi-api-key": API_KEY, "Content-Type": "application/json"}
 
 FIRST_MESSAGE = (
-    "Well well well, look who wandered over! Welcome to the sharing station, sport! "
+    "Well hello, look who wandered over! Welcome to the sharing station, sport! "
     
 )
 

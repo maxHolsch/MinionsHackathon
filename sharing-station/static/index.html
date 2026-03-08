@@ -62,6 +62,13 @@
     #btn-mic.muted:hover { background: var(--red); color: white; }
     #btn-mic.ptt-active { border-color: var(--green); color: var(--green); background: rgba(63,185,80,0.15); }
     #ptt-hint { font-size: 0.65rem; color: var(--muted); margin-left: 4px; }
+    #btn-mic-mode {
+      padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+      background: transparent; color: var(--muted); font-size: 0.65rem;
+      cursor: pointer; margin-left: 4px;
+    }
+    #btn-mic-mode:hover { border-color: var(--blue); color: var(--blue); }
+    #btn-mic-mode.active { border-color: var(--amber); color: var(--amber); }
 
     /* ── MAIN GRID ── */
     main {
@@ -205,6 +212,7 @@
   <span id="conv-label">No session</span>
   <button id="btn-mic" onclick="toggleMicMute()">Mic Muted</button>
   <span id="ptt-hint">[hold Space to talk]</span>
+  <button id="btn-mic-mode" onclick="toggleMicMode()">PTT</button>
   <button id="btn-stop" onclick="stopConversation()">Stop Session</button>
 </header>
 
@@ -366,6 +374,7 @@
   let sessionStarting = false;
   let activeSessionCount = 0;
   let pttActive = false; // push-to-talk spacebar held
+  let pttMode = true;   // true = push-to-talk, false = always-on
 
   async function apiJson(path, options = {}) {
     const res = await fetch(`${API}${path}`, options);
@@ -659,9 +668,14 @@
 
     activeConversation = await Conversation.startSession(options);
 
-    // Start with mic muted (push-to-talk mode)
-    activeConversation.setMicMuted(true);
-    currentMicMuted = true;
+    // Set initial mic state based on mode
+    if (pttMode) {
+      activeConversation.setMicMuted(true);
+      currentMicMuted = true;
+    } else {
+      activeConversation.setMicMuted(false);
+      currentMicMuted = false;
+    }
     updateMicUI();
 
     const context = buildContextUpdate(user);
@@ -688,7 +702,7 @@
       label.textContent = d.conversation_active ? `Session active (${modeLabel})` : `No session (${modeLabel})`;
 
       // Mic mute state (don't override during push-to-talk)
-      if (!pttActive) {
+      if (!(pttMode && pttActive)) {
         currentMicMuted = !!d.mic_muted;
         updateMicUI();
       }
@@ -934,7 +948,7 @@
 
   function updateMicUI() {
     const micBtn = document.getElementById('btn-mic');
-    if (pttActive) {
+    if (pttMode && pttActive) {
       micBtn.className = 'ptt-active';
       micBtn.textContent = '🎙 Speaking';
     } else if (currentMicMuted) {
@@ -944,6 +958,36 @@
       micBtn.className = '';
       micBtn.textContent = 'Mic Live';
     }
+  }
+
+  function updateModeUI() {
+    const modeBtn = document.getElementById('btn-mic-mode');
+    const hint = document.getElementById('ptt-hint');
+    if (pttMode) {
+      modeBtn.textContent = 'PTT';
+      modeBtn.className = 'active';
+      hint.style.display = '';
+    } else {
+      modeBtn.textContent = 'Always On';
+      modeBtn.className = '';
+      hint.style.display = 'none';
+    }
+  }
+
+  function toggleMicMode() {
+    pttMode = !pttMode;
+    pttActive = false;
+    updateModeUI();
+    if (activeConversation) {
+      if (pttMode) {
+        // Switching to PTT: mute mic
+        setMicMuted(true);
+      } else {
+        // Switching to always-on: unmute mic
+        setMicMuted(false);
+      }
+    }
+    updateMicUI();
   }
 
   async function setMicMuted(muted, skipBackend = false) {
@@ -971,8 +1015,7 @@
 
   // ── Push-to-Talk (spacebar) ──
   document.addEventListener('keydown', (e) => {
-    if (e.code !== 'Space' || e.repeat) return;
-    // Don't capture if user is typing in an input/textarea
+    if (!pttMode || e.code !== 'Space' || e.repeat) return;
     const tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
     e.preventDefault();
@@ -982,7 +1025,7 @@
   });
 
   document.addEventListener('keyup', (e) => {
-    if (e.code !== 'Space') return;
+    if (!pttMode || e.code !== 'Space') return;
     const tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
     e.preventDefault();
@@ -990,6 +1033,9 @@
     pttActive = false;
     setMicMuted(true, true);
   });
+
+  // Initialize mode UI
+  updateModeUI();
 
   // Initial health check
   fetch(`${API}/health`)

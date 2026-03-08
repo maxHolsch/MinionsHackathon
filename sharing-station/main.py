@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import asyncio
 import json
+import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -133,6 +134,33 @@ async def _poll_active_user():
         await asyncio.sleep(5)
 
 
+async def _keyboard_servo_listener():
+    """Background task: left/right arrow keys nudge the servo from the terminal."""
+    if not sys.stdin.isatty():
+        return
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    print("[KEYBOARD] Servo debug: Left/Right arrows to nudge, no quit (runs alongside server)")
+    try:
+        tty.setcbreak(fd)  # cbreak so Ctrl-C still works
+        while True:
+            ch = await asyncio.to_thread(sys.stdin.read, 1)
+            if ch == '\x1b':
+                seq = await asyncio.to_thread(sys.stdin.read, 2)
+                if seq == '[D':  # left arrow
+                    await asyncio.to_thread(servo.nudge, -1)
+                elif seq == '[C':  # right arrow
+                    await asyncio.to_thread(servo.nudge, 1)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        print("[KEYBOARD] Servo debug listener stopped")
+
+
 DISTANCE_SLEEP_AFTER_S = 30
 
 
@@ -196,10 +224,12 @@ async def lifespan(app: FastAPI):
             print(f"[SERVER] Failed to deactivate users on startup: {e}")
     poll_task = asyncio.create_task(_poll_active_user())
     distance_task = asyncio.create_task(_poll_distance_sensor())
+    keyboard_task = asyncio.create_task(_keyboard_servo_listener())
     yield
     # Shutdown
     poll_task.cancel()
     distance_task.cancel()
+    keyboard_task.cancel()
     distance.cleanup()
     print("[SERVER] Shutting down...")
     if not USE_WEBRTC:

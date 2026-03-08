@@ -136,3 +136,16 @@ async def control_lock(req: LockRequest):
                 await asyncio.to_thread(conversation_manager.stop)
             asyncio.create_task(_end_conversation())
     return result
+
+
+class NudgeRequest(BaseModel):
+    direction: int  # -1 (left / close) or +1 (right / open)
+
+
+@router.post("/servo/nudge")
+async def nudge_servo(req: NudgeRequest):
+    """Nudge servo by 5° in the given direction. For debug/calibration."""
+    if req.direction not in (-1, 1):
+        raise HTTPException(status_code=400, detail="direction must be -1 or 1")
+    result = await asyncio.to_thread(servo.nudge, req.direction)
+    return result
