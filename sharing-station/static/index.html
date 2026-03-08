@@ -540,23 +540,6 @@
       }
     );
 
-    register(
-      ['control_lock', 'functions.control_lock', 'lock', 'functions.lock'],
-      async (params = {}) => {
-        const action = params.action || 'lock';
-        addEvent('LOCK', `Agent tool: control_lock (${action})`);
-        const result = await postJson('/api/tools/lock', { action });
-        if (String(action).toLowerCase() === 'lock' && activeConversation) {
-          setTimeout(() => {
-            if (activeConversation) {
-              activeConversation.endSession().catch(() => {});
-            }
-          }, 350);
-        }
-        return result;
-      }
-    );
-
     return tools;
   }
 

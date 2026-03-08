@@ -211,7 +211,7 @@ class InventoryService:
                 "Supabase is required for inventory operations. Set SUPABASE_URL and SUPABASE_KEY."
             )
 
-    def _add_supabase(self, name, user_id, condition=None, review=None, slot_row=None, slot_col=None, slots_needed=None):  # noqa: ARG002 — slot_row/slot_col kept for API compat
+    def _add_supabase(self, name, user_id, condition=None, review=None, slot_row=None, slot_col=None, slots_needed=None):
         resolved_user_id = self._resolve_user_id(user_id)
         count = max(1, int(slots_needed)) if slots_needed else 1
         data = {
@@ -223,8 +223,11 @@ class InventoryService:
         if resolved_user_id:
             data["donated_by"] = resolved_user_id
 
-        # Find a contiguous block with 1-slot buffer between neighbours
-        placement = self.find_contiguous_slot(count)
+        # Use explicitly provided slot position if given, otherwise auto-assign
+        if slot_row is not None and slot_col is not None:
+            placement = [int(slot_row), int(slot_col)]
+        else:
+            placement = self.find_contiguous_slot(count)
         if placement is None:
             raise ValueError("No available contiguous slot run in the grid")
         data["slot_row"] = placement[0]

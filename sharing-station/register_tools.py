@@ -89,7 +89,8 @@ TOOL_CONFIGS = [
             "action must be 'deposit' or 'retrieval'. "
             "For deposits, include slots_needed (from the camera's estimated size) so "
             "the system can find a contiguous block of slots with spacing between items. "
-            "The system auto-assigns the best position — you do NOT need to pick a slot yourself."
+            "The system auto-assigns the best available position by default. "
+            "Only pass slot_row and slot_col if the user specifically requests a custom location."
         ),
         "response_timeout_secs": 10,
         "expects_response": True,
@@ -112,6 +113,14 @@ TOOL_CONFIGS = [
                         "Rough guide: small accessory=1, paperback=2, hardcover book=3, board game=6-8. "
                         "Defaults to 1 if omitted."
                     ),
+                },
+                "slot_row": {
+                    "type": "integer",
+                    "description": "Row of the custom slot position. Only use when the user asks to place the item at a specific location.",
+                },
+                "slot_col": {
+                    "type": "integer",
+                    "description": "Column of the custom slot position. Only use when the user asks to place the item at a specific location.",
                 },
             },
             "required": ["item_name", "action", "user_id"],
@@ -158,28 +167,6 @@ TOOL_CONFIGS = [
                 "color": {"type": "string", "description": "Color for the lights (e.g. 'green', 'red', 'blue')"},
             },
             "required": ["mode"],
-        },
-    },
-    {
-        "type": "client",
-        "name": "control_lock",
-        "description": (
-            "Control the physical door lock on the station. "
-            "Use 'unlock' to open the door, 'lock' to close it. "
-            "Locking also ends the conversation session."
-        ),
-        "response_timeout_secs": 5,
-        "expects_response": True,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "Either 'lock' or 'unlock'",
-                    "enum": ["lock", "unlock"],
-                },
-            },
-            "required": ["action"],
         },
     },
 ]

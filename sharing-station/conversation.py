@@ -119,14 +119,6 @@ class ConversationManager:
         color = params.get("color")
         return json.dumps(self._leds.set_mode(mode, position, color, slot_count=slot_count))
 
-    def _tool_control_lock(self, params: dict):
-        action = params.get("action") or "lock"
-        result = self._servo.set_lock(action)
-        if action == "lock":
-            # Close session shortly after lock command returns.
-            threading.Thread(target=self.stop, daemon=True).start()
-        return json.dumps(result)
-
     def _register_tool_aliases(self, client_tools: ClientTools, aliases: list[str], handler):
         for alias in aliases:
             client_tools.register(alias, handler)
@@ -163,11 +155,6 @@ class ConversationManager:
             ["control_lights", "functions.control_lights", "lights", "functions.lights"],
             self._tool_control_lights,
         )
-        self._register_tool_aliases(
-            client_tools,
-            ["control_lock", "functions.control_lock", "lock", "functions.lock"],
-            self._tool_control_lock,
-        )
         return client_tools
 
     def _summarize_item_names(self, item_names: list) -> str:
@@ -186,7 +173,15 @@ class ConversationManager:
             self.is_active = False
             self.conversation = None
             self._active_user_id = None
-        print("[SESSION] Conversation ended")
+        print("[SESSION] Conversation ended — auto-locking in 10 seconds")
+        threading.Thread(target=self._delayed_lock, daemon=True).start()
+
+    def _delayed_lock(self, delay: float = 10.0):
+        time.sleep(delay)
+        # Only lock if no new session started in the meantime.
+        if not self.is_active:
+            self._servo.set_lock("lock")
+            print("[SESSION] Door locked")
 
     def _send_initial_user_context(
         self,
