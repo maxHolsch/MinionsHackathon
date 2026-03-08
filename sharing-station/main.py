@@ -126,13 +126,19 @@ async def _poll_active_user():
         except Exception as e:
             print(f"[POLL] get-active-user error: {e}")
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(5)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     print("[SERVER] Sharing Station server starting...")
+    if _supabase:
+        try:
+            await asyncio.to_thread(_supabase.functions.invoke, "deactivate-user")
+            print("[SERVER] Cleared any active users from previous session")
+        except Exception as e:
+            print(f"[SERVER] Failed to deactivate users on startup: {e}")
     poll_task = asyncio.create_task(_poll_active_user())
     yield
     # Shutdown
