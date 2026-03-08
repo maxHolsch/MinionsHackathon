@@ -38,7 +38,10 @@ async def _poll_active_user():
         try:
             if _supabase:
                 res = await asyncio.to_thread(_supabase.functions.invoke, "get-active-user")
-                user_data = res.data if res else None
+                if isinstance(res, (bytes, str)):
+                    user_data = json.loads(res) if res else None
+                else:
+                    user_data = res.data if res else None
                 current_id = user_data.get("id") if isinstance(user_data, dict) else None
 
                 if current_id != last_user_id:

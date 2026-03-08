@@ -5,16 +5,12 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 )
 
-Deno.serve(async (req) => {
-  if (req.method !== 'GET') {
-    return new Response('Method not allowed', { status: 405 })
-  }
-
+Deno.serve(async (_req) => {
   const { data, error } = await supabase
     .from('users')
     .select('*')
     .eq('is_active', true)
-    .single()
+    .maybeSingle()
 
   if (error) {
     return new Response(JSON.stringify({ error: error.message }), {
