@@ -161,48 +161,29 @@ async def _keyboard_servo_listener():
         print("[KEYBOARD] Servo debug listener stopped")
 
 
-DISTANCE_SLEEP_AFTER_S = 30
-
-
 async def _poll_distance_sensor():
-    last_close_time = None
-    is_asleep = None  # None = unknown, forces a write on first real state change
+    """Poll distance sensor — station never sleeps, always stays awake."""
+    _awake_written = False
 
     while True:
         try:
             cm = await asyncio.to_thread(distance.measure_distance)
             close = cm < 30  # same threshold as PiDistance.CLOSE_THRESHOLD_CM
-            now = time.monotonic()
 
             station["distance"]["cm"] = round(cm, 1) if cm != float("inf") else None
             station["distance"]["is_close"] = close
+            station["distance"]["asleep"] = False
 
-            if close:
-                last_close_time = now
-                if is_asleep is not False:
-                    is_asleep = False
-                    station["distance"]["asleep"] = False
-                    if _supabase:
-                        await asyncio.to_thread(
-                            lambda: _supabase.table("station_config")
-                                .update({"station_asleep": False})
-                                .eq("id", 1)
-                                .execute()
-                        )
-                    log_event("INFO", "Distance: someone nearby — station waking up")
-            else:
-                timed_out = last_close_time is None or (now - last_close_time) >= DISTANCE_SLEEP_AFTER_S
-                if timed_out and is_asleep is not True:
-                    is_asleep = True
-                    station["distance"]["asleep"] = True
-                    if _supabase:
-                        await asyncio.to_thread(
-                            lambda: _supabase.table("station_config")
-                                .update({"station_asleep": True})
-                                .eq("id", 1)
-                                .execute()
-                        )
-                    log_event("INFO", "Distance: nobody nearby for 30s — station sleeping")
+            if not _awake_written:
+                _awake_written = True
+                if _supabase:
+                    await asyncio.to_thread(
+                        lambda: _supabase.table("station_config")
+                            .update({"station_asleep": False})
+                            .eq("id", 1)
+                            .execute()
+                    )
+                log_event("INFO", "Distance: station always-on mode — never sleeping")
 
         except asyncio.CancelledError:
             break
