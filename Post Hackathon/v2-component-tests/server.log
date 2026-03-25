@@ -1,0 +1,16 @@
+2026-03-25 17:26:01  INFO     UDP log listener on port 12346
+2026-03-25 17:26:01  INFO     HTTP server on http://0.0.0.0:8080
+2026-03-25 17:26:01  INFO     UDP log listener on port 12346
+2026-03-25 17:26:11  WARNING  HTTP 404 GET /favicon.ico HTTP/1.1
+2026-03-25 17:27:04  WARNING  HTTP 404 GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1
+2026-03-25 17:27:10  WARNING  HTTP 404 GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1
+2026-03-25 17:29:16  INFO     Shutting down.
+2026-03-25 17:29:17  INFO     UDP log listener on port 12346
+2026-03-25 17:29:18  INFO     HTTP server on http://0.0.0.0:8080
+2026-03-25 17:29:18  INFO     UDP log listener on port 12346
+2026-03-25 17:29:23  WARNING  HTTP 404 GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1
+2026-03-25 17:29:24  WARNING  HTTP 404 GET /favicon.ico HTTP/1.1
+2026-03-25 17:29:27  INFO     /start requested for 10.121.241.60
+2026-03-25 17:29:27  INFO     Connecting to 10.121.241.60:12345 ...
+2026-03-25 17:29:27  ERROR    Audio loop error: [WinError 10013] An attempt was made to access a socket in a way forbidden by its access permissions
+2026-03-25 17:30:40  INFO     Shutting down.
